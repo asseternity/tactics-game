@@ -1,0 +1,26 @@
+[gd_scene load_steps=4 format=3 uid="uid://blnfsixogtwt7"]
+
+[ext_resource type="Script" uid="uid://bnv0cfcktuu21" path="res://scripts/Unit.cs" id="1_fqlnf"]
+[ext_resource type="Texture2D" uid="uid://bll5sqmnkr1kn" path="res://assets/PMCS_MarioSprite-removebg-preview.png" id="1_h85lg"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_h85lg"]
+size = Vector3(0.66825867, 1.430542, 0.7848816)
+
+[node name="Node3D" type="Node3D"]
+script = ExtResource("1_fqlnf")
+
+[node name="Sprite3D" type="Sprite3D" parent="."]
+transform = Transform3D(0.3, 0, 0, 0, 0.3, 0, 0, 0, 0.3, 0, 0.71, 0)
+billboard = 2
+texture = ExtResource("1_h85lg")
+
+[node name="Label3D" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.65, 0)
+billboard = 1
+text = "Health 10/10"
+
+[node name="ClickArea" type="Area3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="ClickArea"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.017158508, 0.6466675, -0.009475708)
+shape = SubResource("BoxShape3D_h85lg")
