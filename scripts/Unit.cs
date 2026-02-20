@@ -1,3 +1,4 @@
+// Unit.cs
 using Godot;
 
 public partial class Unit : Node3D
@@ -9,6 +10,7 @@ public partial class Unit : Node3D
 	public int CurrentHP;
 	public bool HasMoved = false;
 	public bool HasAttacked = false;
+	public bool IsSelected { get; private set; } = false;
 
 	private Sprite3D _sprite;
 	private Label3D _statsLabel;
@@ -18,45 +20,49 @@ public partial class Unit : Node3D
 		_sprite = GetNode<Sprite3D>("Sprite3D");
 		_statsLabel = GetNode<Label3D>("Label3D");
 		CurrentHP = MaxHP;
-		
-		// Initial visual setup
+		UpdateVisuals();
+	}
+
+	public void SetSelected(bool selected)
+	{
+		IsSelected = selected;
 		UpdateVisuals();
 	}
 
 	public void UpdateVisuals()
 	{
-		if (_sprite == null) return; // Guard against running before Ready
+		if (_sprite == null) return;
 
 		_statsLabel.Text = $"{CurrentHP}/{MaxHP}";
 
-		// 1. Color Logic (Fixes the "All Green" bug)
-		if (IsFriendly)
-			_statsLabel.Modulate = new Color(0.2f, 1.0f, 0.2f); // Green
-		else
-			_statsLabel.Modulate = new Color(1.0f, 0.3f, 0.3f); // Red
+		// Label color (team)
+		_statsLabel.Modulate = IsFriendly 
+			? new Color(0.2f, 1.0f, 0.2f) 
+			: new Color(1.0f, 0.3f, 0.3f);
 
-		// 2. Turn Status Logic (Brightness)
-		// "Exhausted" only if BOTH move and attack are used.
-		bool isExhausted = HasMoved && HasAttacked;
-		
-		// Reset color first
-		Color c = new Color(1, 1, 1, 1);
-		
-		if (!IsFriendly)
+		// Sprite color + highlight
+		Color spriteColor;
+
+		if (IsSelected)
 		{
-			c = new Color(1, 0.5f, 0.5f); // Keep enemies slightly red tinted
+			// Gold/yellow highlight for currently selected unit
+			spriteColor = new Color(1.0f, 0.95f, 0.4f, 1.0f);
 		}
-		
-		if (isExhausted && IsFriendly)
+		else if (IsFriendly && HasMoved && HasAttacked)
 		{
-			c.A = 0.5f; // Dim / Dark
-			_sprite.Modulate = c;
+			// Dimmed when exhausted (only friendlies)
+			spriteColor = new Color(0.85f, 0.95f, 0.85f, 0.55f);
+		}
+		else if (IsFriendly)
+		{
+			spriteColor = new Color(0.9f, 1.0f, 0.9f, 1.0f);
 		}
 		else
 		{
-			c.A = 1.0f; // Bright
-			_sprite.Modulate = c;
+			spriteColor = new Color(1.0f, 0.72f, 0.72f, 1.0f); // Slight red tint for enemies
 		}
+
+		_sprite.Modulate = spriteColor;
 	}
 
 	public void TakeDamage(int dmg)
@@ -64,7 +70,6 @@ public partial class Unit : Node3D
 		CurrentHP -= dmg;
 		if (CurrentHP < 0) CurrentHP = 0;
 		UpdateVisuals();
-
 		if (CurrentHP <= 0)
 			QueueFree();
 	}
@@ -73,6 +78,7 @@ public partial class Unit : Node3D
 	{
 		HasMoved = false;
 		HasAttacked = false;
+		IsSelected = false; // Remove highlight on turn end
 		UpdateVisuals();
 	}
 

@@ -15,10 +15,10 @@ void vertex() {
 void fragment() {
     // Calculate grid lines based on world position
     vec2 pos = world_pos.xz;
-    
+   
     // Simple modulo math to draw lines every 'grid_size' units
     float x_line = step(mod(pos.x, grid_size), line_thickness);
-    float z_line = step(mod(pos.z, grid_size), line_thickness);
+    float z_line = step(mod(pos.y, grid_size), line_thickness); // ← FIXED: was pos.z
     
     if (x_line > 0.5 || z_line > 0.5) {
         ALBEDO = grid_color;

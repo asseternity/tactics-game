@@ -1,18 +1,8 @@
-[gd_scene load_steps=8 format=3 uid="uid://dy17ve13o5peq"]
+[gd_scene load_steps=5 format=3 uid="uid://dy17ve13o5peq"]
 
 [ext_resource type="Script" uid="uid://djhxj33ngqjoq" path="res://scripts/GameManager.cs" id="1_elqb8"]
 [ext_resource type="PackedScene" uid="uid://blnfsixogtwt7" path="res://scenes/Unit.tscn" id="2_rvslj"]
-[ext_resource type="Shader" uid="uid://cs7y336rwo105" path="res://scripts/GridShader.gdshader" id="3_0bbpv"]
-
-[sub_resource type="PlaneMesh" id="PlaneMesh_qnwvq"]
-size = Vector2(20, 20)
-
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_rarhs"]
-render_priority = 0
-shader = ExtResource("3_0bbpv")
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_rvslj"]
-size = Vector3(20, 0.1, 20)
+[ext_resource type="PackedScene" uid="uid://c3i82d5asvcrd" path="res://scenes/Tile.tscn" id="3_rarhs"]
 
 [sub_resource type="Environment" id="Environment_rvslj"]
 tonemap_mode = 3
@@ -24,6 +14,7 @@ adjustment_saturation = 1.26
 [node name="Node3D" type="Node3D" node_paths=PackedStringArray("Cam", "ActionMenu", "AttackButton", "EndTurnButton", "StatsLabel")]
 script = ExtResource("1_elqb8")
 UnitScene = ExtResource("2_rvslj")
+TileScene = ExtResource("3_rarhs")
 Cam = NodePath("Camera3D")
 ActionMenu = NodePath("CanvasLayer/Control/VBoxContainer")
 AttackButton = NodePath("CanvasLayer/Control/VBoxContainer/BtnAttack")
@@ -34,15 +25,6 @@ StatsLabel = NodePath("CanvasLayer/PanelContainer/StatsLabel")
 transform = Transform3D(0.70710677, -0.35355338, 0.6123724, 0, 0.8660254, 0.5, -0.70710677, -0.35355338, 0.6123724, 10, 7.845, 10)
 projection = 1
 size = 12.0
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
-mesh = SubResource("PlaneMesh_qnwvq")
-surface_material_override/0 = SubResource("ShaderMaterial_rarhs")
-
-[node name="StaticBody3D" type="StaticBody3D" parent="MeshInstance3D"]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D/StaticBody3D"]
-shape = SubResource("BoxShape3D_rvslj")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.70710677, -0.49999997, 0.49999997, 0, 0.70710677, 0.70710677, -0.70710677, -0.49999997, 0.49999997, 0, 0, 0)
