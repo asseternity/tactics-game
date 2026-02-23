@@ -17,6 +17,21 @@ public partial class Tile : Node3D
 			0.01f, 
 			coords.Y * tileSize   // ← this was coords.Z → now coords.Y
 		);
+		
+		// === THE FIX ===
+		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
+		
+		// Create a brand new material for the overlay through code
+		var highlightMat = new StandardMaterial3D();
+		
+		// Enable transparency so our 0.4f alpha actually works!
+		highlightMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+		
+		// Start completely invisible
+		highlightMat.AlbedoColor = new Color(0, 0, 0, 0);
+		
+		// Assign it to the mesh
+		mesh.MaterialOverlay = highlightMat;
 	}
 
 	// Optional hover highlight (you can call this later)

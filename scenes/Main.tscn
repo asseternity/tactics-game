@@ -1,8 +1,9 @@
-[gd_scene load_steps=5 format=3 uid="uid://dy17ve13o5peq"]
+[gd_scene load_steps=6 format=3 uid="uid://dy17ve13o5peq"]
 
 [ext_resource type="Script" uid="uid://djhxj33ngqjoq" path="res://scripts/GameManager.cs" id="1_elqb8"]
 [ext_resource type="PackedScene" uid="uid://blnfsixogtwt7" path="res://scenes/Unit.tscn" id="2_rvslj"]
 [ext_resource type="PackedScene" uid="uid://c3i82d5asvcrd" path="res://scenes/Tile.tscn" id="3_rarhs"]
+[ext_resource type="Texture2D" uid="uid://bbnjt4j5wwgw1" path="res://cursors/Cursor1.png" id="4_rarhs"]
 
 [sub_resource type="Environment" id="Environment_rvslj"]
 tonemap_mode = 3
@@ -11,7 +12,7 @@ glow_enabled = true
 adjustment_enabled = true
 adjustment_saturation = 1.26
 
-[node name="Node3D" type="Node3D" node_paths=PackedStringArray("Cam", "ActionMenu", "AttackButton", "EndTurnButton", "StatsLabel")]
+[node name="Node3D" type="Node3D" node_paths=PackedStringArray("Cam", "ActionMenu", "AttackButton", "EndTurnButton", "StatsLabel", "DimOverlay")]
 script = ExtResource("1_elqb8")
 UnitScene = ExtResource("2_rvslj")
 TileScene = ExtResource("3_rarhs")
@@ -20,6 +21,8 @@ ActionMenu = NodePath("CanvasLayer/Control/VBoxContainer")
 AttackButton = NodePath("CanvasLayer/Control/VBoxContainer/BtnAttack")
 EndTurnButton = NodePath("CanvasLayer/Control/VBoxContainer/BtnEndTurn")
 StatsLabel = NodePath("CanvasLayer/PanelContainer/StatsLabel")
+DimOverlay = NodePath("CanvasLayer/DimOverlay")
+AttackCursorIcon = ExtResource("4_rarhs")
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(0.70710677, -0.35355338, 0.6123724, 0, 0.8660254, 0.5, -0.70710677, -0.35355338, 0.6123724, 10, 7.845, 10)
@@ -79,3 +82,12 @@ grow_vertical = 0
 layout_mode = 2
 theme_override_font_sizes/font_size = 25
 text = "Select a unit"
+
+[node name="DimOverlay" type="ColorRect" parent="CanvasLayer"]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.011764706, 0.011764706, 0.011764706, 0.827451)

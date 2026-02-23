@@ -6,7 +6,10 @@ public partial class Unit : Node3D
 	[Export] public int MaxHP = 10;
 	[Export] public int AttackDamage = 3;
 	[Export] public bool IsFriendly = true;
+	
+	public event System.Action<Unit> OnDied;
 
+	public string UnitName { get; private set; }
 	public int CurrentHP;
 	public bool HasMoved = false;
 	public bool HasAttacked = false;
@@ -65,15 +68,6 @@ public partial class Unit : Node3D
 		_sprite.Modulate = spriteColor;
 	}
 
-	public void TakeDamage(int dmg)
-	{
-		CurrentHP -= dmg;
-		if (CurrentHP < 0) CurrentHP = 0;
-		UpdateVisuals();
-		if (CurrentHP <= 0)
-			QueueFree();
-	}
-
 	public void NewTurn()
 	{
 		HasMoved = false;
@@ -81,12 +75,85 @@ public partial class Unit : Node3D
 		IsSelected = false; // Remove highlight on turn end
 		UpdateVisuals();
 	}
-
+	
 	public void MoveTo(Vector3 targetPos)
 	{
-		var tween = CreateTween();
-		tween.TweenProperty(this, "position", targetPos, 0.3f);
 		HasMoved = true;
+		UpdateVisuals();
+
+		// === GAME JUICE: THE MOVEMENT HOP ===
+		
+		// Tween 1: Slide the actual unit base across the floor (0.3 seconds total)
+		Tween moveTween = CreateTween();
+		moveTween.TweenProperty(this, "position", targetPos, 0.3f);
+
+		// Tween 2: Make the Sprite physically hop up and down
+		Tween hopTween = CreateTween();
+		
+		float originalY = _sprite.Position.Y;
+		float hopHeight = originalY + 1.2f; // Adjust this to make them jump higher/lower
+
+		// Jump up (Quad Out makes it slow down at the peak of the jump)
+		hopTween.TweenProperty(_sprite, "position:y", hopHeight, 0.15f)
+				.SetTrans(Tween.TransitionType.Quad)
+				.SetEase(Tween.EaseType.Out);
+				
+		// Fall down (Quad In makes it accelerate as it hits the ground)
+		hopTween.TweenProperty(_sprite, "position:y", originalY, 0.15f)
+				.SetTrans(Tween.TransitionType.Quad)
+				.SetEase(Tween.EaseType.In);
+	}
+
+	public void TakeDamage(int dmg)
+	{
+		CurrentHP -= dmg;
+		if (CurrentHP < 0) CurrentHP = 0;
+		UpdateVisuals();
+		
+		if (CurrentHP <= 0)
+		{
+			OnDied?.Invoke(this); // <-- ADD THIS to announce the death!
+			
+			Tween deathTween = CreateTween();
+			deathTween.TweenProperty(this, "scale", Vector3.Zero, 0.25f)
+					  .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			deathTween.Finished += () => QueueFree();
+		}
+	}
+	
+	public void Setup(UnitProfile profile, bool isFriendly)
+	{
+		UnitName = profile.Name;
+		MaxHP = profile.MaxHP;
+		CurrentHP = MaxHP;
+		AttackDamage = profile.AttackDamage;
+		IsFriendly = isFriendly;
+
+		// Load the texture dynamically
+		Texture2D tex = GD.Load<Texture2D>(profile.SpritePath);
+		
+		if (tex != null)
+		{
+			_sprite.Texture = tex;
+
+			// === NORMALIZE SPRITE HEIGHT ===
+			// 1. Define how tall you want ALL units to be in 3D space (e.g., 1.8 Godot units)
+			float targetHeight = 1.8f; 
+			
+			// 2. Calculate its natural 3D height based on pixel height and the Sprite3D's PixelSize
+			float naturalHeight = tex.GetHeight() * _sprite.PixelSize;
+			
+			// 3. Find the exact multiplier needed to make the natural height equal the target height
+			float scaleFactor = targetHeight / naturalHeight;
+			
+			// 4. Apply the scale uniformly so it doesn't stretch weirdly
+			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+		}
+		else
+		{
+			GD.PrintErr($"❌ Failed to load sprite: {profile.SpritePath}");
+		}
+
 		UpdateVisuals();
 	}
 }

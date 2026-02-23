@@ -15,6 +15,9 @@
 [sub_resource type="Resource" id="Resource_s7jb5"]
 script = ExtResource("2_evon6")
 scene = ExtResource("1_th37b")
+overrides = {
+"canvas_layer": "2.0"
+}
 
 [sub_resource type="Resource" id="Resource_jphbq"]
 script = ExtResource("2_evon6")

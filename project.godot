@@ -24,6 +24,7 @@ directories/dch_directory={
 "Commander": "res://dialogic_characters/Commander.dch"
 }
 directories/dtl_directory={
+"Intro": "res://dialogic_timelines/Intro.dtl",
 "PostFirstBattle": "res://dialogic_timelines/PostFirstBattle.dtl"
 }
 layout/style_directory={
