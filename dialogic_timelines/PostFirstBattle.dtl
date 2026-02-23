@@ -1,0 +1,8 @@
+join Commander center
+Commander: Great work, soldier! We won the first battle.
+- Continue the fight
+	Commander: Then let's push forward!
+- Ask for reinforcements
+	Commander: I'll call HQ right away.
+- Retreat
+	Commander: Understood... we pull back.

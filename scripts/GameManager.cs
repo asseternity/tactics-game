@@ -1,5 +1,6 @@
 // GameManager.cs
 using Godot;
+using Godot.Collections;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -16,9 +17,9 @@ public partial class GameManager : Node3D
 	[Export] public Label StatsLabel;
 	
 	// Tile Settings
-	private Dictionary<Vector2I, Tile> _grid = new();
+	private Godot.Collections.Dictionary<Vector2I, Tile> _grid = new();
 	private const float TileSize = 2f;
-	private const int GridWidth = 10;   // adjust to cover your whole play area
+	private const int GridWidth = 10;
 	private const int GridDepth = 10;
 
 	// Game State
@@ -28,9 +29,13 @@ public partial class GameManager : Node3D
 	private List<Unit> _units = new List<Unit>();
 	private Unit _selectedUnit;
 
-	private const int GridSize = 2;
-	private const float MaxMoveDistance = 5f;     // ~2 grid tiles (adjust as needed)
-	private const float AttackRange = 3.5f;       // ~1.5 grid tiles
+	private const float MaxMoveDistance = 5f;
+	private const float AttackRange = 3.5f;
+	
+	// === DIALOGIC INTEGRATION ===
+	private Node _dialogic;
+	private bool _dialogueActive = false;
+	private bool _hasPlayedFirstTurnDialogue = false;
 
 	public override void _Ready()
 	{
@@ -50,7 +55,18 @@ public partial class GameManager : Node3D
 		// UI Setup
 		AttackButton.Pressed += OnAttackButtonPressed;
 		EndTurnButton.Pressed += OnEndTurnPressed;
-		ActionMenu.Visible = false;
+		ActionMenu.Visible = true;
+		
+		// === DIALOGIC SETUP ===
+		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
+		if (_dialogic == null)
+		{
+			GD.PrintErr("❌ Dialogic autoload NOT found! Restart Godot completely and re-enable the plugin.");
+			return;
+		}
+		GD.Print("✅ Dialogic autoload found.");
+
+		_dialogic.Connect("timeline_ended", new Callable(this, MethodName.OnTimelineEnded));
 
 		CallDeferred("UpdateStatsUI");
 	}
@@ -81,7 +97,8 @@ public partial class GameManager : Node3D
 
 	public override void _UnhandledInput(InputEvent @event)
 	{
-		if (_currentState == State.EnemyTurn) return;
+		if (_dialogueActive || _currentState == State.EnemyTurn)
+			return;
 
 		if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
 		{
@@ -106,7 +123,6 @@ public partial class GameManager : Node3D
 		}
 
 		Node collider = (Node)result["collider"];
-		Vector3 hitPos = (Vector3)result["position"];
 
 		if (collider.GetParent() is Unit clickedUnit)
 		{
@@ -122,15 +138,11 @@ public partial class GameManager : Node3D
 					ShowUnitInfo(clickedUnit);
 			}
 		}
-		else // Clicked ground
+		else if (collider.GetParent() is Tile tile)
 		{
 			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
 			{
-				// New: we hit a Tile directly → position is already perfectly snapped!
-				if (collider.GetParent() is Tile tile)
-				{
-					TryMoveTo(tile.GlobalPosition);
-				}
+				TryMoveTo(tile.GlobalPosition);
 			}
 		}
 	}
@@ -161,7 +173,6 @@ public partial class GameManager : Node3D
 
 	private bool IsTileFree(Vector3 pos)
 	{
-		// Much faster and exact now
 		foreach (var u in _units)
 		{
 			if (IsInstanceValid(u) && u.GlobalPosition.DistanceTo(pos) < 0.1f)
@@ -285,11 +296,6 @@ public partial class GameManager : Node3D
 		ShowActions(true);
 	}
 
-	private void OnEndTurnPressed()
-	{
-		StartEnemyTurn();
-	}
-
 	private async void StartEnemyTurn()
 	{
 		_currentState = State.EnemyTurn;
@@ -301,13 +307,13 @@ public partial class GameManager : Node3D
 
 		await ToSignal(GetTree().CreateTimer(1.0f), "timeout");
 
-		// Enemy Phase - TODO: Add real AI here (move/attack toward player units)
+		// Enemy Phase
 		foreach (var u in _units.Where(x => IsInstanceValid(x) && !x.IsFriendly))
 		{
 			u.NewTurn();
 		}
 
-		// Reset player units for new turn
+		// Reset player units
 		foreach (var u in _units.Where(x => IsInstanceValid(x) && x.IsFriendly))
 		{
 			u.NewTurn();
@@ -317,11 +323,54 @@ public partial class GameManager : Node3D
 		ActionMenu.Visible = true;
 		if (StatsLabel != null) StatsLabel.Text = "Your Turn";
 	}
-
-	private Vector3 SnapToGrid(Vector3 rawPos)
+	
+	private void OnEndTurnPressed()
 	{
-		float x = Mathf.Round(rawPos.X / GridSize) * GridSize;
-		float z = Mathf.Round(rawPos.Z / GridSize) * GridSize;
-		return new Vector3(x, 0, z);
+		// If the dialogue hasn't been played yet, play it and return
+		if (!_hasPlayedFirstTurnDialogue)
+		{
+			_hasPlayedFirstTurnDialogue = true;
+			StartDialogue("res://dialogic_timelines/PostFirstBattle.dtl");
+			return;
+		}
+
+		// Otherwise, proceed to the enemy turn as normal
+		StartEnemyTurn();
+	}
+
+	// === DIALOGIC METHODS ===
+	public void StartDialogue(string timelinePath)
+	{
+		if (_dialogueActive || _dialogic == null) return;
+		
+		GD.Print($"🎙 Starting dialogue: {timelinePath}");
+		
+		_dialogueActive = true;
+		ActionMenu.Visible = false;
+		DeselectUnit();
+		
+		// REMOVED: GetTree().Paused = true; 
+		// (Your input logic already protects against clicking during dialogue)
+		
+		StatsLabel.Text = "Dialogue...";
+		
+		_dialogic.Call("start", timelinePath);
+		GD.Print("✅ Dialogic.start called");
+	}
+
+	private void OnTimelineEnded()
+	{
+		GD.Print("✅ Dialogue finished — timeline_ended signal received");
+		
+		_dialogueActive = false;
+		// REMOVED: GetTree().Paused = false;
+		ActionMenu.Visible = true;
+		UpdateStatsUI();
+		
+		// Transition straight into the Enemy Turn since they clicked "End Turn" to trigger this
+		if (_currentState == State.PlayerTurn)
+		{
+			StartEnemyTurn();
+		}
 	}
 }
