@@ -19,7 +19,7 @@
 &"portraits": {
 "Default": {
 "export_overrides": {
-"image": "\"res://assets/PMCS_MarioSprite-removebg-preview.png\""
+"image": "\"res://assets/knight.png\""
 },
 "ignore_char_scale": false,
 "mirror": false,
