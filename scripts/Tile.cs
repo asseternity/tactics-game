@@ -5,42 +5,35 @@ public partial class Tile : Node3D
 {
 	[Export] public Vector2I GridCoords { get; set; } = Vector2I.Zero;
 
-	public Unit OccupyingUnit { get; set; } = null;
-
 	public void Setup(Vector2I coords, float tileSize = 2f)
 	{
 		GridCoords = coords;
+		Position = new Vector3(coords.X * tileSize, 0.01f, coords.Y * tileSize);
 		
-		// X stays X, but grid "Z" is stored in Vector2I.Y
-		Position = new Vector3(
-			coords.X * tileSize, 
-			0.01f, 
-			coords.Y * tileSize   // ← this was coords.Z → now coords.Y
-		);
-		
-		// === THE FIX ===
 		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
-		
-		// Create a brand new material for the overlay through code
-		var highlightMat = new StandardMaterial3D();
-		
-		// Enable transparency so our 0.4f alpha actually works!
-		highlightMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-		
-		// Start completely invisible
-		highlightMat.AlbedoColor = new Color(0, 0, 0, 0);
-		
-		// Assign it to the mesh
-		mesh.MaterialOverlay = highlightMat;
+		if (mesh.MaterialOverlay != null)
+		{
+			mesh.MaterialOverlay = (Material)mesh.MaterialOverlay.Duplicate();
+		}
 	}
 
-	// Optional hover highlight (you can call this later)
-	public void SetHighlight(bool active)
+	// Now accepts a custom color! (Defaults to green if none is provided)
+	public void SetHighlight(bool active, Color? customColor = null)
 	{
 		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
-		if (mesh.MaterialOverlay is StandardMaterial3D mat)
+		if (mesh.MaterialOverlay is not StandardMaterial3D mat)
+			return;
+
+		if (active)
 		{
-			mat.AlbedoColor = active ? new Color(0, 1, 0, 0.4f) : new Color(0, 0, 0, 0);
+			Color colorToUse = customColor ?? new Color(0, 1f, 0, 0.55f);
+			mat.AlbedoColor = colorToUse;
 		}
+		else
+		{
+			mat.AlbedoColor = new Color(1f, 1f, 1f, 0f);   // ← white + zero alpha (no black tint!)
+		}
+
+		mesh.MaterialOverlay = mat; // force Godot to update
 	}
 }

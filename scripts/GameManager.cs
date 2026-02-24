@@ -7,6 +7,9 @@ using System.Threading.Tasks;
 
 public partial class GameManager : Node3D
 {
+	// === SINGLETON ACCESS ===
+	public static GameManager Instance { get; private set; }
+
 	[Export] public PackedScene UnitScene;
 	[Export] public PackedScene TileScene;
 	[Export] public Camera3D Cam;
@@ -19,55 +22,46 @@ public partial class GameManager : Node3D
 	[Export] public ColorRect DimOverlay;
 	[Export] public Texture2D AttackCursorIcon;
 	
-	// UI Utils
 	private Tween _uiTween;
+	private List<Tile> _movementHighlightTiles = new();
+	private Unit _previewedEnemy;
 	
-	// Tile Settings
 	private Godot.Collections.Dictionary<Vector2I, Tile> _grid = new();
 	private const float TileSize = 2f;
 	private const int GridWidth = 10;
 	private const int GridDepth = 10;
 	private Tile _hoveredTile;
 	
-	// === STORY SYSTEM ===
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	private List<ScriptEvent> _mainScript = new();
-	
-	// NEW: Our Persistent Party!
 	private List<PersistentUnit> _party = new(); 
-	
 	private int _currentScriptIndex = -1;
 
-	// Game State
-	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget }
-	private State _currentState = State.PlayerTurn;
+	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene }
+	private State _currentState = State.Cutscene; // Start in cutscene mode
 
 	private List<Unit> _units = new List<Unit>();
 	private Unit _selectedUnit;
-	private const int MaxMoveTiles = 3;
 	
-	// === DIALOGIC INTEGRATION ===
 	private Node _dialogic;
 	private bool _dialogueActive = false;
+	private bool _levelUpActive = false; // Block inputs during Level Up
 
-	public override void _Ready()
+public override void _Ready()
 	{
-		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 15, 4, 1);
-		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 8, 5, 2);
-		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1);
-		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1);
+		Instance = this; 
 
-		// CREATE THE PARTY! (They will persist forever now)
-		_party.Add(new PersistentUnit(_unitDatabase["Knight"]));
-		_party.Add(new PersistentUnit(_unitDatabase["Archer"]));
+		// Add XP Rewards (the final number) to all units!
+		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 25, 7, 1, 3, 0);
+		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 18, 8, 2, 3, 0);
+		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1, 3, 40);
+		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1, 2, 120);
 
-		// === THE FIX: LOAD THE SCRIPT HERE ===
 		_mainScript = GameScript.GetMainScript();
-		// =====================================
 
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
-		EndTurnButton.Pressed += StartEnemyTurn; 
+		EndTurnButton.Pressed += OnEndTurnPressed; 
 		ActionMenu.Visible = false;
 
 		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
@@ -77,6 +71,133 @@ public partial class GameManager : Node3D
 		AdvanceScript();
 	}
 
+	// === RTS CAMERA LOGIC ===
+	public override void _Process(double delta)
+	{
+		if (_dialogueActive || _levelUpActive) return;
+
+		Vector2 mousePos = GetViewport().GetMousePosition();
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+		Vector2 moveDir = Vector2.Zero;
+		float margin = 20f; 
+
+		if (mousePos.X < margin) moveDir.X -= 1;
+		if (mousePos.X > screenSize.X - margin) moveDir.X += 1;
+		if (mousePos.Y < margin) moveDir.Y += 1; 
+		if (mousePos.Y > screenSize.Y - margin) moveDir.Y -= 1; 
+
+		if (moveDir != Vector2.Zero)
+		{
+			moveDir = moveDir.Normalized();
+			Vector3 forward = -Cam.GlobalTransform.Basis.Z; forward.Y = 0; forward = forward.Normalized();
+			Vector3 right = Cam.GlobalTransform.Basis.X; right.Y = 0; right = right.Normalized();
+			Vector3 finalMove = (right * moveDir.X) + (forward * moveDir.Y);
+
+			Vector3 newPos = Cam.GlobalPosition + (finalMove * 15f * (float)delta);
+			
+			// === BUG 3 FIX: DYNAMIC & GENEROUS BOUNDARIES ===
+			// Give the camera exactly 15 Godot-units of "padding" on all 4 sides of whatever your grid size is
+			float pad = 15f; 
+			newPos.X = Mathf.Clamp(newPos.X, -pad, (GridWidth * TileSize) + pad);
+			newPos.Z = Mathf.Clamp(newPos.Z, -pad, (GridDepth * TileSize) + pad);
+
+			Cam.GlobalPosition = newPos;
+		}
+	}
+
+	// === DYNAMIC LEVEL UP UI ===
+	public async Task ShowLevelUpScreen(Unit unit)
+	{
+		_levelUpActive = true;
+		ShowActions(false); // Hide the action menu so you can't accidentally end the turn!
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
+
+		Control uiRoot = new Control();
+		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		
+		// === THE FIX: ATTACH TO CANVAS LAYER ===
+		// This puts the menu explicitly ON TOP of the DimOverlay so it is clickable!
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot);
+		else AddChild(uiRoot);
+
+		// === THE FIX: PERFECT CENTERING ===
+		CenterContainer center = new CenterContainer();
+		center.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		uiRoot.AddChild(center);
+
+		PanelContainer panel = new PanelContainer();
+		StyleBoxFlat panelStyle = new StyleBoxFlat {
+			BgColor = new Color(0.1f, 0.1f, 0.15f, 0.95f),
+			CornerRadiusTopLeft = 15, CornerRadiusTopRight = 15,
+			CornerRadiusBottomLeft = 15, CornerRadiusBottomRight = 15,
+			BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4,
+			BorderColor = new Color(1f, 0.8f, 0f, 1f),
+			ContentMarginBottom = 30, ContentMarginTop = 30, ContentMarginLeft = 40, ContentMarginRight = 40
+		};
+		panel.AddThemeStyleboxOverride("panel", panelStyle);
+		center.AddChild(panel); // Add to the center container!
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		vbox.AddThemeConstantOverride("separation", 15);
+		panel.AddChild(vbox);
+
+		Label title = new Label { Text = $"{unit.Data.Profile.Name} Reached Level {unit.Data.Level}!", HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 30);
+		vbox.AddChild(title);
+
+		List<string> options = new List<string> { "FullHeal", "MaxHP", "Movement", "AttackDamage" };
+		System.Random rnd = new System.Random();
+		options = options.OrderBy(x => rnd.Next()).Take(3).ToList();
+
+		foreach (string opt in options)
+		{
+			Button btn = new Button { CustomMinimumSize = new Vector2(300, 60) };
+			btn.AddThemeFontSizeOverride("font_size", 20);
+
+			if (opt == "FullHeal") btn.Text = "Fully Restore HP";
+			else if (opt == "MaxHP") btn.Text = "+5 Max HP";
+			else if (opt == "Movement") btn.Text = "+1 Movement Range";
+			else if (opt == "AttackDamage") btn.Text = "+2 Attack Damage";
+
+			btn.Pressed += () => 
+			{
+				if (opt == "FullHeal") unit.Data.CurrentHP = unit.Data.MaxHP;
+				else if (opt == "MaxHP") { unit.Data.MaxHP += 5; unit.Data.CurrentHP += 5; }
+				else if (opt == "Movement") unit.Data.Movement += 1;
+				else if (opt == "AttackDamage") unit.Data.AttackDamage += 2;
+
+				unit.UpdateVisuals();
+
+				Tween outTween = CreateTween();
+				outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+				outTween.Finished += () => 
+				{
+					uiRoot.QueueFree();
+					if (DimOverlay != null && !_dialogueActive) DimOverlay.Visible = false;
+					_levelUpActive = false;
+					
+					// Re-show the action menu if it's still the player's turn
+					if (_currentState == State.PlayerTurn && _selectedUnit != null) ShowActions(true);
+					
+					tcs.SetResult(true);
+				};
+			};
+			vbox.AddChild(btn);
+		}
+
+		// Wait exactly 1 frame for Godot to calculate the sizes of the buttons/text
+		await ToSignal(GetTree(), "process_frame");
+		
+		// Now set the pivot to the true center and animate!
+		panel.PivotOffset = panel.Size / 2;
+		panel.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		await tcs.Task; 
+	}
+
 	private async void StartBattle(BattleSetup data)
 	{
 		GD.Print("⚔️ Starting Battle!");
@@ -84,16 +205,13 @@ public partial class GameManager : Node3D
 		await ClearBoardAsync();
 		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
 
-		// 1. Heal the party before battle
 		foreach (var hero in _party) hero.HealBetweenBattles();
 
-		// 2. Spawn the party at the BattleSetup's designated tiles
 		for (int i = 0; i < Mathf.Min(_party.Count, data.FriendlySpawns.Count); i++)
 		{
 			SpawnUnit(_party[i], true, data.FriendlySpawns[i]);
 		}
 
-		// 3. Spawn the fresh enemies
 		foreach (var e in data.Enemies) 
 		{
 			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, e.Position);
@@ -111,9 +229,7 @@ public partial class GameManager : Node3D
 		AddChild(u);
 		u.GlobalPosition = pos;
 		
-		// Pass the persistent data in!
 		u.Setup(data, isFriendly);
-		
 		u.OnDied += HandleUnitDeath; 
 		_units.Add(u);
 
@@ -134,9 +250,7 @@ public partial class GameManager : Node3D
 
 		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
 		
-		// Crucial: Pass the attacker into TakeDamage so Unit.cs knows who to give XP to!
 		await target.TakeDamage(attacker.Data.AttackDamage, attacker);
-		
 		SpawnFloatingDamage(target.GlobalPosition, attacker.Data.AttackDamage);
 
 		if (target.GetNodeOrNull<Sprite3D>("Sprite3D") is Sprite3D targetSprite)
@@ -151,17 +265,24 @@ public partial class GameManager : Node3D
 		RefreshTargetIcons();
 	}
 	
-	private void HandleUnitDeath(Unit deadUnit)
+	private async void HandleUnitDeath(Unit deadUnit)
 	{
-		_units.Remove(deadUnit); // Remove from our active roster
-		
-		// Check if any enemies are left
-		bool enemiesAlive = _units.Any(u => !u.IsFriendly && IsInstanceValid(u));
-		
+		_units.Remove(deadUnit); 
+
+		bool enemiesAlive = _units.Any(u => IsInstanceValid(u) && !u.IsFriendly);
 		if (!enemiesAlive)
 		{
+			// === BUG 1 FIX: LOCK AND SCRUB THE BOARD ===
+			_currentState = State.Cutscene; 
+			ClearMovementRange();
+			ClearHover();
+			DeselectUnit();
+			ShowActions(false);
+			// ==========================================
+
 			GD.Print("🏆 Battle Won!");
-			AdvanceScript(); // Trigger the next event in the script!
+			await ToSignal(GetTree().CreateTimer(1.8f), "timeout");
+			AdvanceScript(); 
 		}
 	}
 	
@@ -179,23 +300,6 @@ public partial class GameManager : Node3D
 		}
 	}
 
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (_dialogueActive || _currentState == State.EnemyTurn)
-			return;
-
-		// Detect mouse movement for hovering
-		if (@event is InputEventMouseMotion mouseMotion)
-		{
-			HandleHover(mouseMotion.Position);
-		}
-		// Detect mouse clicks (your existing code)
-		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
-		{
-			HandleClick(mouseEvent.Position);
-		}
-	}
-
 	private void HandleClick(Vector2 mousePos)
 	{
 		var spaceState = GetWorld3D().DirectSpaceState;
@@ -207,8 +311,7 @@ public partial class GameManager : Node3D
 
 		if (result.Count == 0) 
 		{
-			if (_selectedUnit != null && _currentState != State.SelectingAttackTarget)
-				DeselectUnit();
+			if (_selectedUnit != null && _currentState != State.SelectingAttackTarget) DeselectUnit();
 			return;
 		}
 
@@ -216,24 +319,22 @@ public partial class GameManager : Node3D
 
 		if (collider.GetParent() is Unit clickedUnit)
 		{
-			if (clickedUnit.IsFriendly)
-			{
-				SelectUnit(clickedUnit);
-			}
+			if (clickedUnit.IsFriendly) SelectUnit(clickedUnit);
 			else 
 			{
-				if (_currentState == State.SelectingAttackTarget)
+				bool canSmartAttack = _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked && GetGridDistance(_selectedUnit.GlobalPosition, clickedUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+
+				if (_currentState == State.SelectingAttackTarget || canSmartAttack)
+				{
+					ClearAttackPreview(); 
 					TryAttackTarget(clickedUnit);
-				else
-					ShowUnitInfo(clickedUnit);
+				}
+				else ShowUnitInfo(clickedUnit);
 			}
 		}
 		else if (collider.GetParent() is Tile tile)
 		{
-			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
-			{
-				TryMoveTo(tile.GlobalPosition);
-			}
+			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved) TryMoveTo(tile.GlobalPosition);
 		}
 	}
 
@@ -241,7 +342,8 @@ public partial class GameManager : Node3D
 	{
 		if (_selectedUnit == null) return;
 
-		if (GetGridDistance(_selectedUnit.GlobalPosition, targetPos) > MaxMoveTiles)
+		// UPDATE: Uses dynamic Movement stat!
+		if (GetGridDistance(_selectedUnit.GlobalPosition, targetPos) > _selectedUnit.Data.Movement)
 		{
 			GD.Print("Movement too far!");
 			return;
@@ -250,20 +352,16 @@ public partial class GameManager : Node3D
 		if (IsTileFree(targetPos))
 		{
 			_selectedUnit.MoveTo(targetPos);
-			_selectedUnit.HasMoved = true; // Instantly lock out spam-clicking
+			_selectedUnit.HasMoved = true; 
 			
-			// Hide the menu and clear old icons while the unit is hopping
 			ShowActions(false);
 			RefreshTargetIcons();
+			ClearMovementRange();
 
-			// === THE FIX: WAIT FOR THE ANIMATION ===
-			// Wait for the 0.3s movement hop to physically finish!
 			await ToSignal(GetTree().CreateTimer(0.35f), "timeout");
 
-			// Ensure the player didn't deselect the unit while it was hopping
 			if (_selectedUnit != null)
 			{
-				// Now that the unit is on the new tile, calculate the math!
 				CheckAutoExhaust(_selectedUnit);
 				_selectedUnit.UpdateVisuals();
 				UpdateStatsUI();
@@ -271,8 +369,7 @@ public partial class GameManager : Node3D
 				
 				RefreshTargetIcons();
 
-				if (_selectedUnit.HasAttacked)
-					DeselectUnit();
+				if (_selectedUnit.HasAttacked) DeselectUnit();
 			}
 		}
 	}
@@ -281,8 +378,7 @@ public partial class GameManager : Node3D
 	{
 		foreach (var u in _units)
 		{
-			if (IsInstanceValid(u) && u.GlobalPosition.DistanceTo(pos) < 0.1f)
-				return false;
+			if (IsInstanceValid(u) && u.GlobalPosition.DistanceTo(pos) < 0.1f) return false;
 		}
 		return true;
 	}
@@ -293,12 +389,7 @@ public partial class GameManager : Node3D
 
 		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) <= _selectedUnit.Data.AttackRange)
 		{
-			// Wait for the animation and damage to apply
 			await PerformAttackAsync(_selectedUnit, target);
-
-			// === THE FIX ===
-			// If the attack killed the last enemy, the Director triggered dialogue
-			// and cleared _selectedUnit while we were waiting. Abort cleanly!
 			if (_selectedUnit == null || !IsInstanceValid(_selectedUnit)) return;
 
 			CancelAttackMode();
@@ -318,42 +409,26 @@ public partial class GameManager : Node3D
 			return;
 		}
 
-		if (_selectedUnit != null && _selectedUnit != u)
-			_selectedUnit.SetSelected(false);
+		if (_selectedUnit != null && _selectedUnit != u) _selectedUnit.SetSelected(false);
 
 		_selectedUnit = u;
 		_selectedUnit.SetSelected(true);
-		// === DYNAMIC SQUASH & STRETCH ===
-		// Grab the sprite dynamically
+		
 		Node3D sprite = _selectedUnit.GetNode<Node3D>("Sprite3D");
-
-		// The first time we select this unit, save its current scale as metadata
-		if (!sprite.HasMeta("BaseScale"))
-		{
-			sprite.SetMeta("BaseScale", sprite.Scale);
-		}
-
-		// Read that base scale back
+		if (!sprite.HasMeta("BaseScale")) sprite.SetMeta("BaseScale", sprite.Scale);
 		Vector3 baseScale = sprite.GetMeta("BaseScale").AsVector3();
+		Vector3 stretchedScale = new Vector3(baseScale.X * 0.8f, baseScale.Y * 1.3f, baseScale.Z * 0.8f);
 
-		// Calculate the stretch dynamically relative to the base scale
-		Vector3 stretchedScale = new Vector3(
-			baseScale.X * 0.8f,
-			baseScale.Y * 1.3f,
-			baseScale.Z * 0.8f
-		);
-
-		// Animate it!
 		Tween tween = CreateTween();
 		tween.TweenProperty(sprite, "scale", stretchedScale, 0.1f);
 		tween.TweenProperty(sprite, "scale", baseScale, 0.2f).SetTrans(Tween.TransitionType.Bounce);
-		// ================================
+		
 		ShowUnitInfo(u);
-
 		UpdateStatsUI();
 		ShowActions(true);
 		_currentState = State.PlayerTurn;
 		RefreshTargetIcons();
+		ShowMovementRange(_selectedUnit);
 	}
 
 	private void DeselectUnit()
@@ -365,6 +440,7 @@ public partial class GameManager : Node3D
 		}
 		UpdateStatsUI();
 		RefreshTargetIcons();
+		ClearMovementRange();
 	}
 
 	private void ShowUnitInfo(Unit u)
@@ -387,78 +463,46 @@ public partial class GameManager : Node3D
 							  $"Move: {moveStr}\n" +
 							  $"Attack: {atkStr}";
 		}
-		else
-		{
-			StatsLabel.Text = "Select a Unit...";
-		}
+		else StatsLabel.Text = "Select a Unit...";
 	}
 
 	private void ShowActions(bool show)
 	{
-		// 1. Update the button text/state first
 		if (show && _selectedUnit != null)
 		{
 			AttackButton.Text = "Attack";
 			AttackButton.Disabled = _selectedUnit.HasAttacked;
 		}
 
-		// 2. Kill any active UI tween so they don't fight
-		if (_uiTween != null && _uiTween.IsValid())
-		{
-			_uiTween.Kill();
-		}
+		if (_uiTween != null && _uiTween.IsValid()) _uiTween.Kill();
 
 		_uiTween = CreateTween();
 		ActionMenu.PivotOffset = ActionMenu.Size / 2;
 
 		if (show)
 		{
-			// === THE FIX ===
-			// If it was completely hidden, crush the scale down BEFORE making it visible
-			if (!ActionMenu.Visible)
-			{
-				ActionMenu.Scale = new Vector2(0.01f, 0.01f);
-			}
-			
+			if (!ActionMenu.Visible) ActionMenu.Scale = new Vector2(0.01f, 0.01f);
 			ActionMenu.Visible = true;
-
-			// Pop IN
-			_uiTween.TweenProperty(ActionMenu, "scale", Vector2.One, 0.2f)
-				   .SetTrans(Tween.TransitionType.Back)
-				   .SetEase(Tween.EaseType.Out);
+			_uiTween.TweenProperty(ActionMenu, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 		}
 		else
 		{
-			// Pop OUT
-			_uiTween.TweenProperty(ActionMenu, "scale", new Vector2(0.01f, 0.01f), 0.15f)
-				   .SetTrans(Tween.TransitionType.Back)
-				   .SetEase(Tween.EaseType.In);
-
-			// ONLY hide it completely after the shrink animation finishes
+			_uiTween.TweenProperty(ActionMenu, "scale", new Vector2(0.01f, 0.01f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 			_uiTween.Finished += () => ActionMenu.Visible = false;
 		}
 	}
 
 	private void OnAttackButtonPressed()
 	{
-		if (_currentState == State.SelectingAttackTarget)
-		{
-			CancelAttackMode();
-		}
-		else if (_selectedUnit != null && !_selectedUnit.HasAttacked)
-		{
-			EnterAttackMode();
-		}
+		if (_currentState == State.SelectingAttackTarget) CancelAttackMode();
+		else if (_selectedUnit != null && !_selectedUnit.HasAttacked) EnterAttackMode();
 	}
 
 	private void EnterAttackMode()
 	{
 		_currentState = State.SelectingAttackTarget;
 		AttackButton.Text = "Cancel";
-		if (AttackCursorIcon != null)
-		{
-			Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
-		}
+		if (AttackCursorIcon != null) Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
 	}
 
 	private void CancelAttackMode()
@@ -474,6 +518,7 @@ public partial class GameManager : Node3D
 		_currentState = State.EnemyTurn;
 		ShowActions(false);
 		DeselectUnit();
+		ClearMovementRange();
 		RefreshTargetIcons();
 		if (StatsLabel != null) StatsLabel.Text = "Enemy Turn...";
 
@@ -487,7 +532,7 @@ public partial class GameManager : Node3D
 			if (!IsInstanceValid(enemy)) continue;
 
 			var players = _units.Where(x => IsInstanceValid(x) && x.IsFriendly).ToList();
-			if (players.Count == 0) break; // Game over, all friendlies dead
+			if (players.Count == 0) break; 
 
 			Unit bestTarget = null;
 			Vector3 bestMovePos = enemy.GlobalPosition;
@@ -500,10 +545,7 @@ public partial class GameManager : Node3D
 				bool canAttackThisTurn = false;
 				int distToPlayer = GetGridDistance(enemy.GlobalPosition, player.GlobalPosition);
 
-				if (distToPlayer <= enemy.Data.AttackRange)
-				{
-					canAttackThisTurn = true;
-				}
+				if (distToPlayer <= enemy.Data.AttackRange) canAttackThisTurn = true;
 				else
 				{
 					int closestWeCanGet = distToPlayer;
@@ -511,7 +553,8 @@ public partial class GameManager : Node3D
 					foreach (var tilePos in _grid.Keys)
 					{
 						Vector3 worldPos = new Vector3(tilePos.X * TileSize, 0.01f, tilePos.Y * TileSize);
-						if (GetGridDistance(enemy.GlobalPosition, worldPos) <= MaxMoveTiles && IsTileFree(worldPos))
+						// UPDATE: Uses dynamic Movement stat!
+						if (GetGridDistance(enemy.GlobalPosition, worldPos) <= enemy.Data.Movement && IsTileFree(worldPos))
 						{
 							int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
 							
@@ -531,8 +574,8 @@ public partial class GameManager : Node3D
 				}
 
 				if (canAttackThisTurn) targetScore += 1000;
-				targetScore -= player.Data.CurrentHP * 10; // Read from Data
-				if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.AttackDamage) targetScore += 2000; // Read from Data
+				targetScore -= player.Data.CurrentHP * 10; 
+				if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.AttackDamage) targetScore += 2000; 
 				targetScore -= distToPlayer;
 
 				if (targetScore > bestScore)
@@ -569,16 +612,29 @@ public partial class GameManager : Node3D
 		if (StatsLabel != null) StatsLabel.Text = "Your Turn";
 	}
 	
-	private void OnEndTurnPressed()
+	public override void _UnhandledInput(InputEvent @event)
 	{
-		StartEnemyTurn();
+		// Block input entirely if it isn't the player's turn!
+		if (_dialogueActive || _levelUpActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
+
+		if (@event is InputEventMouseMotion mouseMotion) HandleHover(mouseMotion.Position);
+		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+	}
+	
+	private void OnEndTurnPressed() 
+	{ 
+		// Bug 2 Fix: Double-check safety before starting the AI turn!
+		if (_currentState != State.PlayerTurn || _levelUpActive) return; 
+
+		bool enemiesAlive = _units.Any(u => IsInstanceValid(u) && !u.IsFriendly);
+		if (!enemiesAlive) return; // Prevent ending turn if battle is actively wrapping up
+
+		StartEnemyTurn(); 
 	}
 
-	// === DIALOGIC METHODS ===
 	public void StartDialogue(string timelinePath)
 	{
 		if (_dialogueActive || _dialogic == null) return;
-		
 		GD.Print($"🎙 Starting dialogue: {timelinePath}");
 		
 		_dialogueActive = true;
@@ -587,17 +643,14 @@ public partial class GameManager : Node3D
 		if (DimOverlay != null) DimOverlay.Visible = true;
 		
 		StatsLabel.Text = "Dialogue...";
-		
 		_dialogic.Call("start", timelinePath);
-		GD.Print("✅ Dialogic.start called");
 	}
 
 	private void OnTimelineEnded()
 	{
 		_dialogueActive = false;
 		if (DimOverlay != null) DimOverlay.Visible = false;
-		
-		AdvanceScript(); // When dialogue finishes, move to the next script event!
+		AdvanceScript(); 
 	}
 	
 	private void HandleHover(Vector2 mousePos)
@@ -613,54 +666,56 @@ public partial class GameManager : Node3D
 		if (result.Count == 0)
 		{
 			ClearHover();
+			ClearAttackPreview(); 
 			return;
 		}
 
 		Node collider = (Node)result["collider"];
 		Tile targetTile = null;
+		Unit hoveredUnit = null;
 
-		if (collider.GetParent() is Tile tile)
+		if (collider.GetParent() is Unit u) 
 		{
-			targetTile = tile;
+			hoveredUnit = u;
+			Vector2I gridPos = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+			if (_grid.TryGetValue(gridPos, out Tile underlyingTile)) targetTile = underlyingTile;
 		}
-		else if (collider.GetParent() is Unit unit)
+		else if (collider.GetParent() is Tile tile) targetTile = tile;
+
+		if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
 		{
-			Vector2I gridPos = new Vector2I(
-				Mathf.RoundToInt(unit.GlobalPosition.X / TileSize),
-				Mathf.RoundToInt(unit.GlobalPosition.Z / TileSize)
-			);
-			
-			if (_grid.TryGetValue(gridPos, out Tile underlyingTile))
+			if (hoveredUnit != null && !hoveredUnit.IsFriendly)
 			{
-				targetTile = underlyingTile;
+				if (GetGridDistance(_selectedUnit.GlobalPosition, hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange)
+				{
+					Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					
+					if (_previewedEnemy != hoveredUnit)
+					{
+						ClearAttackPreview(); 
+						_previewedEnemy = hoveredUnit;
+						hoveredUnit.PreviewDamage(_selectedUnit.Data.AttackDamage);
+					}
+					
+					ClearHover(); 
+					return;
+				}
 			}
 		}
 
-		// If we are looking at a new tile, evaluate if it can be highlighted
+		ClearAttackPreview();
+
 		if (targetTile != _hoveredTile)
 		{
-			ClearHover();
+			ClearHover();                  
 			_hoveredTile = targetTile;
-			
-			if (_hoveredTile != null)
+
+			if (_hoveredTile != null && _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
 			{
-				// === NEW LOGIC: Check if it's a valid move ===
-				bool isValidMove = false;
+				// UPDATE: Uses dynamic Movement stat!
+				bool canMoveHere = GetGridDistance(_selectedUnit.GlobalPosition, _hoveredTile.GlobalPosition) <= _selectedUnit.Data.Movement && IsTileFree(_hoveredTile.GlobalPosition);
 
-				// Only allow movement highlights during the Player Turn when a unit is ready to move
-				if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
-				{
-					if (GetGridDistance(_selectedUnit.GlobalPosition, _hoveredTile.GlobalPosition) <= MaxMoveTiles && IsTileFree(_hoveredTile.GlobalPosition))
-					{
-						isValidMove = true;
-					}
-				}
-
-				// Only light up if the move is actually legal!
-				if (isValidMove)
-				{
-					_hoveredTile.SetHighlight(true);
-				}
+				if (canMoveHere) _hoveredTile.SetHighlight(true, new Color(0f, 1f, 0f, 0.7f)); 
 			}
 		}
 	}
@@ -669,49 +724,31 @@ public partial class GameManager : Node3D
 	{
 		if (_hoveredTile != null)
 		{
-			_hoveredTile.SetHighlight(false);
+			// If it's a movement tile, restore it to the EXACT SAME soft blue
+			if (_movementHighlightTiles.Contains(_hoveredTile)) 
+			{
+				_hoveredTile.SetHighlight(true, new Color(0.35f, 0.72f, 1.0f, 0.28f));
+			}
+			else 
+			{
+				// If it's just a normal floor tile, turn the highlight completely off
+				_hoveredTile.SetHighlight(false); 
+			}
+			
 			_hoveredTile = null;
 		}
 	}
 	
 	private void SpawnFloatingDamage(Vector3 targetPosition, int damageAmount)
 	{
-		// Create the 3D text node dynamically
-		Label3D damageLabel = new Label3D();
-		
-		// Style the text
-		damageLabel.Text = damageAmount.ToString();
-		damageLabel.PixelSize = 0.02f; // Scale of the text
-		damageLabel.FontSize = 30; // High resolution font
-		damageLabel.Modulate = new Color(1, 0.2f, 0.2f); // Bright red
-		damageLabel.OutlineModulate = new Color(0, 0, 0); // Black outline
-		damageLabel.OutlineSize = 6;
-		
-		// Make it always face the camera and draw on top of everything
-		damageLabel.Billboard = BaseMaterial3D.BillboardModeEnum.Enabled;
-		damageLabel.NoDepthTest = true; 
-
-		// Add it to the world BEFORE setting its position
+		Label3D damageLabel = new Label3D { Text = damageAmount.ToString(), PixelSize = 0.02f, FontSize = 30, Modulate = new Color(1, 0.2f, 0.2f), OutlineModulate = new Color(0, 0, 0), OutlineSize = 6, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true };
 		AddChild(damageLabel);
-		
-		// Start it slightly above the enemy's head
 		damageLabel.GlobalPosition = targetPosition + new Vector3(0, 1.5f, 0);
 
-		// === ANIMATE IT ===
 		Tween tween = CreateTween();
-		
-		// Float it up by 1.5 units over 0.8 seconds
 		Vector3 floatUpPosition = damageLabel.GlobalPosition + new Vector3(0, 1.5f, 0);
-		tween.TweenProperty(damageLabel, "global_position", floatUpPosition, 0.8f)
-			 .SetTrans(Tween.TransitionType.Cubic)
-			 .SetEase(Tween.EaseType.Out);
-
-		// At the same time (Parallel), fade its alpha (transparency) to 0
-		tween.Parallel().TweenProperty(damageLabel, "modulate:a", 0.0f, 0.8f)
-			 .SetTrans(Tween.TransitionType.Cubic)
-			 .SetEase(Tween.EaseType.In);
-
-		// When the animation finishes, delete the label so we don't leak memory
+		tween.TweenProperty(damageLabel, "global_position", floatUpPosition, 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		tween.Parallel().TweenProperty(damageLabel, "modulate:a", 0.0f, 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
 		tween.Finished += () => damageLabel.QueueFree();
 	}
 	
@@ -728,11 +765,18 @@ public partial class GameManager : Node3D
 
 		ScriptEvent currentEvent = _mainScript[_currentScriptIndex];
 
-		if (currentEvent.Type == EventType.Dialogue)
+		if (currentEvent.Type == EventType.AddPartyMember)
 		{
+			// Add them to the persistent roster, then immediately jump to the next script event!
+			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId]));
+			AdvanceScript();
+		}
+		else if (currentEvent.Type == EventType.Dialogue) 
+		{
+			_currentState = State.Cutscene; // Lock the board
 			StartDialogue(currentEvent.TimelinePath);
 		}
-		else if (currentEvent.Type == EventType.Battle)
+		else if (currentEvent.Type == EventType.Battle) 
 		{
 			StartBattle(currentEvent.BattleData);
 		}
@@ -741,26 +785,18 @@ public partial class GameManager : Node3D
 	private async Task ClearBoardAsync()
 	{
 		DeselectUnit();
-		
-		// If the board is already empty, just return immediately
 		if (_units.Count == 0) return;
 
-		// Tween every unit on the board down to scale 0
 		foreach (var u in _units)
 		{
 			if (IsInstanceValid(u))
 			{
 				Tween shrinkTween = CreateTween();
-				shrinkTween.TweenProperty(u, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.2f)
-						   .SetTrans(Tween.TransitionType.Back)
-						   .SetEase(Tween.EaseType.In);
-						   
+				shrinkTween.TweenProperty(u, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 				shrinkTween.Finished += () => u.QueueFree();
 			}
 		}
 		_units.Clear();
-
-		// Wait for the shrink animations to finish before continuing the code
 		await ToSignal(GetTree().CreateTimer(0.25f), "timeout");
 	}
 
@@ -768,10 +804,7 @@ public partial class GameManager : Node3D
 	{
 		if (!u.IsFriendly || u.HasAttacked) return;
 
-		// Is there ANY enemy within this specific unit's attack range?
 		bool enemyInRange = _units.Any(enemy => !enemy.IsFriendly && IsInstanceValid(enemy) && GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.Data.AttackRange);
-
-		// If no enemies to hit, automatically use up their attack action so they dim
 		if (!enemyInRange)
 		{
 			u.HasAttacked = true;
@@ -781,54 +814,26 @@ public partial class GameManager : Node3D
 	
 	private void ShowTurnAnnouncer(string text, Color color)
 	{
-		Label announcer = new Label();
-		announcer.Text = text;
-		
-		// Style the text to be massive and punchy
+		Label announcer = new Label { Text = text, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 		announcer.AddThemeFontSizeOverride("font_size", 100);
 		announcer.AddThemeColorOverride("font_color", color);
 		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0));
 		announcer.AddThemeConstantOverride("outline_size", 20);
-		
-		// Perfectly center the text inside the bounds
-		announcer.HorizontalAlignment = HorizontalAlignment.Center;
-		announcer.VerticalAlignment = VerticalAlignment.Center;
-		
-		// Make the label's bounds fill the entire screen
 		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 
-		// Attach it to the UI CanvasLayer (using DimOverlay's parent so it draws over 3D)
-		if (DimOverlay != null) 
-			DimOverlay.GetParent().AddChild(announcer);
-		else 
-			AddChild(announcer);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer);
+		else AddChild(announcer);
 
-		// Set the pivot to the dead center of the screen so it scales properly
-		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
-		announcer.PivotOffset = screenSize / 2;
-
-		// Start invisible and tiny
+		announcer.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
 		announcer.Scale = Vector2.Zero;
 		announcer.Modulate = new Color(1, 1, 1, 0);
 
 		Tween tween = CreateTween();
-		
-		// 1. Pop In (Scale up and fade in at the same time)
-		tween.Parallel().TweenProperty(announcer, "scale", Vector2.One, 0.4f)
-			 .SetTrans(Tween.TransitionType.Back)
-			 .SetEase(Tween.EaseType.Out);
+		tween.Parallel().TweenProperty(announcer, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 		tween.Parallel().TweenProperty(announcer, "modulate:a", 1.0f, 0.3f);
-		
-		// 2. Hold on screen for 1 second
 		tween.Chain().TweenInterval(1.0f);
-		
-		// 3. Zoom out and fade away
-		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.5f, 1.5f), 0.3f)
-			 .SetTrans(Tween.TransitionType.Cubic)
-			 .SetEase(Tween.EaseType.In);
+		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.5f, 1.5f), 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
 		tween.Parallel().TweenProperty(announcer, "modulate:a", 0.0f, 0.3f);
-		
-		// Clean up!
 		tween.Finished += () => announcer.QueueFree();
 	}
 	
@@ -838,8 +843,6 @@ public partial class GameManager : Node3D
 		int az = Mathf.RoundToInt(posA.Z / TileSize);
 		int bx = Mathf.RoundToInt(posB.X / TileSize);
 		int bz = Mathf.RoundToInt(posB.Z / TileSize);
-
-		// Chebyshev Distance: Diagonals count as exactly 1 tile
 		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
 	}
 	
@@ -848,17 +851,50 @@ public partial class GameManager : Node3D
 		foreach (var u in _units)
 		{
 			if (!IsInstanceValid(u)) continue;
-			u.SetTargetable(false); // Default to off
+			u.SetTargetable(false); 
 
-			// If it's our turn, we have a unit selected, and that unit hasn't attacked yet
 			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
 			{
-				// If the unit is an enemy AND within our exact attack range, turn the icon on!
 				if (!u.IsFriendly && GetGridDistance(_selectedUnit.GlobalPosition, u.GlobalPosition) <= _selectedUnit.Data.AttackRange)
 				{
 					u.SetTargetable(true);
 				}
 			}
 		}
+	}
+	
+	private void ShowMovementRange(Unit u)
+	{
+		ClearMovementRange();
+		if (u == null || u.HasMoved) return;
+
+		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
+		
+		foreach (var kvp in _grid)
+		{
+			Vector3 tilePos = new Vector3(kvp.Key.X * TileSize, 0.01f, kvp.Key.Y * TileSize);
+			// UPDATE: Uses dynamic Movement stat!
+			if (GetGridDistance(u.GlobalPosition, tilePos) <= u.Data.Movement && IsTileFree(tilePos))
+			{
+				kvp.Value.SetHighlight(true, moveColor);
+				_movementHighlightTiles.Add(kvp.Value);
+			}
+		}
+	}
+
+	private void ClearMovementRange()
+	{
+		foreach (var t in _movementHighlightTiles) t.SetHighlight(false);
+		_movementHighlightTiles.Clear();
+	}
+
+	private void ClearAttackPreview()
+	{
+		if (_previewedEnemy != null) 
+		{ 
+			_previewedEnemy.ClearPreview(); 
+			_previewedEnemy = null; 
+		}
+		if (_currentState != State.SelectingAttackTarget) Input.SetCustomMouseCursor(null);
 	}
 }

@@ -1,6 +1,8 @@
-[gd_scene load_steps=4 format=3 uid="uid://c3i82d5asvcrd"]
+[gd_scene load_steps=5 format=3 uid="uid://c3i82d5asvcrd"]
 
 [ext_resource type="Script" uid="uid://cuhbvcqsqugy8" path="res://scripts/Tile.cs" id="1_2sjy5"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_2sjy5"]
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_vhibn"]
 
@@ -11,6 +13,7 @@ size = Vector3(2, 0.2, 2)
 script = ExtResource("1_2sjy5")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+material_overlay = SubResource("StandardMaterial3D_2sjy5")
 mesh = SubResource("PlaneMesh_vhibn")
 
 [node name="Area3D" type="Area3D" parent="."]
