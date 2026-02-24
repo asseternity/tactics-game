@@ -9,6 +9,9 @@ public partial class GameManager : Node3D
 {
 	// === SINGLETON ACCESS ===
 	public static GameManager Instance { get; private set; }
+	public Theme MasterTheme { get; private set; }
+	public StyleBoxFlat BaseUIStyle { get; private set; }
+	public StyleBoxFlat BadgeStyle { get; private set; } // <-- NEW: For the NPC Nameplate
 
 	[Export] public PackedScene UnitScene;
 	[Export] public PackedScene TileScene;
@@ -18,7 +21,7 @@ public partial class GameManager : Node3D
 	[Export] public Control ActionMenu;
 	[Export] public Button AttackButton;
 	[Export] public Button EndTurnButton;
-	[Export] public Label StatsLabel;
+	[Export] public RichTextLabel StatsLabel; // <-- UPGRADED!
 	[Export] public ColorRect DimOverlay;
 	[Export] public Texture2D AttackCursorIcon;
 	
@@ -42,6 +45,7 @@ public partial class GameManager : Node3D
 
 	private List<Unit> _units = new List<Unit>();
 	private Unit _selectedUnit;
+	private List<Node3D> _obstacles = new List<Node3D>();
 	
 	private Node _dialogic;
 	private bool _dialogueActive = false;
@@ -50,11 +54,14 @@ public partial class GameManager : Node3D
 public override void _Ready()
 	{
 		Instance = this; 
+		
+		// === NEW: Initialize our gorgeous UI ===
+		CallDeferred(MethodName.SetupUnifiedUI);
 
 		// Add XP Rewards (the final number) to all units!
-		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 25, 7, 1, 3, 0);
-		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 18, 8, 2, 3, 0);
-		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1, 3, 40);
+		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 25, 15, 1, 3, 0);
+		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 18, 18, 2, 3, 0);
+		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1, 3, 140);
 		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1, 2, 120);
 
 		_mainScript = GameScript.GetMainScript();
@@ -216,6 +223,9 @@ public override void _Ready()
 		{
 			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, e.Position);
 		}
+		
+		System.Random rnd = new System.Random();
+		SpawnRandomObstacles(rnd.Next(8, 16));
 
 		_currentState = State.PlayerTurn;
 		StatsLabel.Text = "Battle Start! Your Turn.";
@@ -249,9 +259,12 @@ public override void _Ready()
 		tween.TweenProperty(attacker, "global_position", startPos, 0.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.InOut);
 
 		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
-		
-		await target.TakeDamage(attacker.Data.AttackDamage, attacker);
-		SpawnFloatingDamage(target.GlobalPosition, attacker.Data.AttackDamage);
+
+		// === FIXED ORDER: Floating damage FIRST, then damage + possible death ===
+		int damage = GD.RandRange(attacker.GetMinDamage(), attacker.GetMaxDamage());
+		SpawnFloatingDamage(target.GlobalPosition, damage);
+
+		await target.TakeDamage(damage, attacker);
 
 		if (target.GetNodeOrNull<Sprite3D>("Sprite3D") is Sprite3D targetSprite)
 		{
@@ -281,7 +294,11 @@ public override void _Ready()
 			// ==========================================
 
 			GD.Print("🏆 Battle Won!");
-			await ToSignal(GetTree().CreateTimer(1.8f), "timeout");
+			
+			// === THE FIX: REDUCED DELAY ===
+			// Shrunk from 1.8f to 0.4f to eliminate dead time while still
+			// allowing the 0.25s death shrink animation to finish.
+			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
 			AdvanceScript(); 
 		}
 	}
@@ -338,48 +355,23 @@ public override void _Ready()
 		}
 	}
 
-	private async void TryMoveTo(Vector3 targetPos)
+	private Vector2I GetGridPos(Vector3 pos)
 	{
-		if (_selectedUnit == null) return;
-
-		// UPDATE: Uses dynamic Movement stat!
-		if (GetGridDistance(_selectedUnit.GlobalPosition, targetPos) > _selectedUnit.Data.Movement)
-		{
-			GD.Print("Movement too far!");
-			return;
-		}
-
-		if (IsTileFree(targetPos))
-		{
-			_selectedUnit.MoveTo(targetPos);
-			_selectedUnit.HasMoved = true; 
-			
-			ShowActions(false);
-			RefreshTargetIcons();
-			ClearMovementRange();
-
-			await ToSignal(GetTree().CreateTimer(0.35f), "timeout");
-
-			if (_selectedUnit != null)
-			{
-				CheckAutoExhaust(_selectedUnit);
-				_selectedUnit.UpdateVisuals();
-				UpdateStatsUI();
-				ShowActions(true);
-				
-				RefreshTargetIcons();
-
-				if (_selectedUnit.HasAttacked) DeselectUnit();
-			}
-		}
+		return new Vector2I(Mathf.RoundToInt(pos.X / TileSize), Mathf.RoundToInt(pos.Z / TileSize));
 	}
 
-	private bool IsTileFree(Vector3 pos)
+	private bool IsTileFree(Vector2I gridPos)
 	{
 		foreach (var u in _units)
 		{
-			if (IsInstanceValid(u) && u.GlobalPosition.DistanceTo(pos) < 0.1f) return false;
+			if (IsInstanceValid(u) && GetGridPos(u.GlobalPosition) == gridPos) return false;
 		}
+		
+		foreach (var obs in _obstacles)
+		{
+			if (IsInstanceValid(obs) && GetGridPos(obs.GlobalPosition) == gridPos) return false;
+		}
+		
 		return true;
 	}
 
@@ -449,23 +441,6 @@ public override void _Ready()
 			StatsLabel.Text = $"Enemy Unit\nLv.{u.Data.Level} HP: {u.Data.CurrentHP}/{u.Data.MaxHP}\nDmg: {u.Data.AttackDamage}";
 	}
 
-	private void UpdateStatsUI()
-	{
-		if (StatsLabel == null) return;
-
-		if (_selectedUnit != null && _selectedUnit.Data != null)
-		{
-			string moveStr = _selectedUnit.HasMoved ? "[USED]" : "[READY]";
-			string atkStr = _selectedUnit.HasAttacked ? "[USED]" : "[READY]";
-			
-			StatsLabel.Text = $"Selected: {_selectedUnit.Data.Profile.Name}\n" +
-							  $"Lv.{_selectedUnit.Data.Level} HP: {_selectedUnit.Data.CurrentHP}/{_selectedUnit.Data.MaxHP}\n" +
-							  $"Move: {moveStr}\n" +
-							  $"Attack: {atkStr}";
-		}
-		else StatsLabel.Text = "Select a Unit...";
-	}
-
 	private void ShowActions(bool show)
 	{
 		if (show && _selectedUnit != null)
@@ -527,7 +502,7 @@ public override void _Ready()
 
 		var enemies = _units.Where(x => IsInstanceValid(x) && !x.IsFriendly).ToList();
 
-		foreach (var enemy in enemies)
+foreach (var enemy in enemies)
 		{
 			if (!IsInstanceValid(enemy)) continue;
 
@@ -537,6 +512,11 @@ public override void _Ready()
 			Unit bestTarget = null;
 			Vector3 bestMovePos = enemy.GlobalPosition;
 			float bestScore = -9999f; 
+
+			// === NEW AI PATHING PREP ===
+			Vector2I enemyCoords = new Vector2I(Mathf.RoundToInt(enemy.GlobalPosition.X / TileSize), Mathf.RoundToInt(enemy.GlobalPosition.Z / TileSize));
+			var reachable = GetReachableTiles(enemyCoords, enemy.Data.Movement);
+			reachable[enemyCoords] = enemyCoords; // Include self so it can choose to stay still
 
 			foreach (var player in players)
 			{
@@ -550,25 +530,22 @@ public override void _Ready()
 				{
 					int closestWeCanGet = distToPlayer;
 					
-					foreach (var tilePos in _grid.Keys)
+					// === NEW: AI only considers truly reachable tiles ===
+					foreach (var tilePos in reachable.Keys)
 					{
 						Vector3 worldPos = new Vector3(tilePos.X * TileSize, 0.01f, tilePos.Y * TileSize);
-						// UPDATE: Uses dynamic Movement stat!
-						if (GetGridDistance(enemy.GlobalPosition, worldPos) <= enemy.Data.Movement && IsTileFree(worldPos))
+						int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
+						
+						if (distFromTileToPlayer <= enemy.Data.AttackRange)
 						{
-							int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
-							
-							if (distFromTileToPlayer <= enemy.Data.AttackRange)
-							{
-								canAttackThisTurn = true;
-								optimalTile = worldPos;
-								break; 
-							}
-							else if (distFromTileToPlayer < closestWeCanGet)
-							{
-								closestWeCanGet = distFromTileToPlayer;
-								optimalTile = worldPos;
-							}
+							canAttackThisTurn = true;
+							optimalTile = worldPos;
+							break; 
+						}
+						else if (distFromTileToPlayer < closestWeCanGet)
+						{
+							closestWeCanGet = distFromTileToPlayer;
+							optimalTile = worldPos;
 						}
 					}
 				}
@@ -588,8 +565,9 @@ public override void _Ready()
 			
 			if (bestMovePos != enemy.GlobalPosition)
 			{
-				enemy.MoveTo(bestMovePos);
-				await ToSignal(GetTree().CreateTimer(0.35f), "timeout"); 
+				Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(bestMovePos.X / TileSize), Mathf.RoundToInt(bestMovePos.Z / TileSize));
+				var path = ExtractPath(reachable, enemyCoords, targetCoords);
+				await enemy.MoveAlongPath(path); // <-- NEW: Use multi-hop path
 			}
 
 			if (bestTarget != null && GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.Data.AttackRange)
@@ -653,6 +631,61 @@ public override void _Ready()
 		AdvanceScript(); 
 	}
 	
+	private void ShowMovementRange(Unit u)
+	{
+		ClearMovementRange();
+		if (u == null || u.HasMoved) return;
+
+		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+		var reachable = GetReachableTiles(startCoords, u.Data.Movement);
+
+		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
+		
+		foreach (var kvp in reachable)
+		{
+			if (kvp.Key == startCoords) continue; // Don't highlight the tile standing on
+			if (_grid.TryGetValue(kvp.Key, out Tile tile))
+			{
+				tile.SetHighlight(true, moveColor);
+				_movementHighlightTiles.Add(tile);
+			}
+		}
+	}
+
+	private async void TryMoveTo(Vector3 targetPos)
+	{
+		if (_selectedUnit == null) return;
+
+		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(_selectedUnit.GlobalPosition.X / TileSize), Mathf.RoundToInt(_selectedUnit.GlobalPosition.Z / TileSize));
+		Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(targetPos.X / TileSize), Mathf.RoundToInt(targetPos.Z / TileSize));
+
+		var reachable = GetReachableTiles(startCoords, _selectedUnit.Data.Movement);
+
+		if (reachable.ContainsKey(targetCoords))
+		{
+			var path = ExtractPath(reachable, startCoords, targetCoords);
+
+			ShowActions(false);
+			RefreshTargetIcons();
+			ClearMovementRange(); // Clear visual blue tiles before moving
+
+			// Await the new multi-hop path!
+			await _selectedUnit.MoveAlongPath(path);
+
+			if (_selectedUnit != null)
+			{
+				CheckAutoExhaust(_selectedUnit);
+				_selectedUnit.UpdateVisuals();
+				UpdateStatsUI();
+				ShowActions(true);
+				RefreshTargetIcons();
+
+				if (_selectedUnit.HasAttacked) DeselectUnit();
+			}
+		}
+		else GD.Print("Movement blocked or too far!");
+	}
+	
 	private void HandleHover(Vector2 mousePos)
 	{
 		var spaceState = GetWorld3D().DirectSpaceState;
@@ -694,7 +727,7 @@ public override void _Ready()
 					{
 						ClearAttackPreview(); 
 						_previewedEnemy = hoveredUnit;
-						hoveredUnit.PreviewDamage(_selectedUnit.Data.AttackDamage);
+						hoveredUnit.PreviewDamage(_selectedUnit.GetMinDamage());
 					}
 					
 					ClearHover(); 
@@ -712,9 +745,7 @@ public override void _Ready()
 
 			if (_hoveredTile != null && _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
 			{
-				// UPDATE: Uses dynamic Movement stat!
-				bool canMoveHere = GetGridDistance(_selectedUnit.GlobalPosition, _hoveredTile.GlobalPosition) <= _selectedUnit.Data.Movement && IsTileFree(_hoveredTile.GlobalPosition);
-
+				bool canMoveHere = _movementHighlightTiles.Contains(_hoveredTile);
 				if (canMoveHere) _hoveredTile.SetHighlight(true, new Color(0f, 1f, 0f, 0.7f)); 
 			}
 		}
@@ -797,6 +828,19 @@ public override void _Ready()
 			}
 		}
 		_units.Clear();
+		
+		// === NEW: Clear obstacles ===
+		foreach (var obs in _obstacles)
+		{
+			if (IsInstanceValid(obs))
+			{
+				Tween shrinkTween = CreateTween();
+				shrinkTween.TweenProperty(obs, "scale", Vector3.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+				shrinkTween.Finished += () => obs.QueueFree();
+			}
+		}
+		_obstacles.Clear();
+		
 		await ToSignal(GetTree().CreateTimer(0.25f), "timeout");
 	}
 
@@ -862,25 +906,6 @@ public override void _Ready()
 			}
 		}
 	}
-	
-	private void ShowMovementRange(Unit u)
-	{
-		ClearMovementRange();
-		if (u == null || u.HasMoved) return;
-
-		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
-		
-		foreach (var kvp in _grid)
-		{
-			Vector3 tilePos = new Vector3(kvp.Key.X * TileSize, 0.01f, kvp.Key.Y * TileSize);
-			// UPDATE: Uses dynamic Movement stat!
-			if (GetGridDistance(u.GlobalPosition, tilePos) <= u.Data.Movement && IsTileFree(tilePos))
-			{
-				kvp.Value.SetHighlight(true, moveColor);
-				_movementHighlightTiles.Add(kvp.Value);
-			}
-		}
-	}
 
 	private void ClearMovementRange()
 	{
@@ -896,5 +921,256 @@ public override void _Ready()
 			_previewedEnemy = null; 
 		}
 		if (_currentState != State.SelectingAttackTarget) Input.SetCustomMouseCursor(null);
+	}
+	
+	private void SpawnRandomObstacles(int obstacleCount)
+	{
+		List<Vector2I> validTiles = new List<Vector2I>();
+		
+		// Find all tiles that don't have a unit on them
+		foreach (var pos in _grid.Keys)
+		{
+			// === THE FIX ===
+			// 'pos' is already a Vector2I, so we can pass it directly!
+			if (IsTileFree(pos)) validTiles.Add(pos);
+		}
+
+		// Shuffle the available tiles
+		System.Random rnd = new System.Random();
+		validTiles = validTiles.OrderBy(x => rnd.Next()).ToList();
+
+		int spawned = 0;
+		foreach (var gridPos in validTiles)
+		{
+			if (spawned >= obstacleCount) break;
+
+			Vector3 worldPos = new Vector3(gridPos.X * TileSize, 0.01f, gridPos.Y * TileSize);
+			bool isTall = rnd.Next(2) == 0; // 50/50 chance for rock vs tree
+			
+			SpawnObstacle(worldPos, isTall);
+			spawned++;
+		}
+	}
+
+	private void SpawnObstacle(Vector3 pos, bool isTall)
+	{
+		// 1. Create the node without setting its position yet
+		Node3D obsNode = new Node3D(); 
+		
+		Sprite3D sprite = new Sprite3D 
+		{ 
+			Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+			AlphaCut = SpriteBase3D.AlphaCutMode.OpaquePrepass
+		};
+		
+		Texture2D tex;
+		float targetHeight;
+
+		if (isTall)
+		{
+			tex = GD.Load<Texture2D>("res://assets/tree.png");
+			targetHeight = 1.8f; 
+		}
+		else
+		{
+			tex = GD.Load<Texture2D>("res://assets/rock.png");
+			targetHeight = 0.9f; 
+		}
+
+		sprite.Texture = tex;
+		
+		float scaleFactor = targetHeight / (tex.GetHeight() * sprite.PixelSize);
+		sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+		sprite.Position = new Vector3(0, targetHeight / 2.0f, 0);
+
+		obsNode.AddChild(sprite);
+
+		// === THE FIX ===
+		// 2. Add it to the tree FIRST
+		AddChild(obsNode);
+		_obstacles.Add(obsNode);
+		
+		// 3. NOW set its GlobalPosition because Godot knows where it lives!
+		obsNode.GlobalPosition = pos;
+		
+		obsNode.Scale = Vector3.Zero;
+		CreateTween().TweenProperty(obsNode, "scale", Vector3.One, 0.4f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+	}
+	
+	// === NEW: Pathfinding Logic ===
+	private System.Collections.Generic.Dictionary<Vector2I, Vector2I> GetReachableTiles(Vector2I start, int maxMovement)
+	{
+		var frontier = new System.Collections.Generic.Queue<Vector2I>();
+		var cameFrom = new System.Collections.Generic.Dictionary<Vector2I, Vector2I>();
+		var costSoFar = new System.Collections.Generic.Dictionary<Vector2I, int>();
+
+		frontier.Enqueue(start);
+		cameFrom[start] = start;
+		costSoFar[start] = 0;
+
+		// 4-way movement only (no diagonal corner-cutting)
+		Vector2I[] directions = {
+			new Vector2I(1, 0), new Vector2I(-1, 0), new Vector2I(0, 1), new Vector2I(0, -1),
+			new Vector2I(1, 1), new Vector2I(-1, -1), new Vector2I(1, -1), new Vector2I(-1, 1)
+		};
+
+		while (frontier.Count > 0)
+		{
+			var current = frontier.Dequeue();
+
+			foreach (var dir in directions)
+			{
+				var next = current + dir;
+				int newCost = costSoFar[current] + 1;
+
+				if (newCost > maxMovement) continue;
+				if (!_grid.ContainsKey(next)) continue;
+				
+				// === THE FIX ===
+				// Directly pass the 2D 'next' coordinate!
+				if (!IsTileFree(next)) continue;
+
+				if (!costSoFar.ContainsKey(next) || newCost < costSoFar[next])
+				{
+					costSoFar[next] = newCost;
+					cameFrom[next] = current;
+					frontier.Enqueue(next);
+				}
+			}
+		}
+		return cameFrom;
+	}
+
+	private System.Collections.Generic.List<Vector3> ExtractPath(System.Collections.Generic.Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I end)
+	{
+		var path = new System.Collections.Generic.List<Vector3>();
+		var current = end;
+		while (current != start)
+		{
+			path.Add(new Vector3(current.X * TileSize, 0.01f, current.Y * TileSize));
+			current = cameFrom[current];
+		}
+		path.Reverse(); // Reverse so it goes from Start -> End
+		return path;
+	}
+	
+	// === UI & JUICE SYSTEM ===
+	private void SetupUnifiedUI()
+	{
+		StyleBoxFlat baseStyle = new StyleBoxFlat {
+			BgColor = new Color(0.08f, 0.08f, 0.1f, 0.95f),
+			CornerRadiusTopLeft = 16, CornerRadiusTopRight = 16,
+			CornerRadiusBottomLeft = 16, CornerRadiusBottomRight = 16,
+			BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4,
+			BorderColor = new Color(0.3f, 0.3f, 0.35f, 1f),
+			ContentMarginLeft = 24, ContentMarginRight = 24, ContentMarginTop = 16, ContentMarginBottom = 16,
+			ShadowColor = new Color(0, 0, 0, 0.7f), ShadowSize = 8, ShadowOffset = new Vector2(0, 6)
+		};
+
+		// === NEW: A sleek, contrasting badge for the NPC Nameplate! ===
+		BadgeStyle = new StyleBoxFlat {
+			BgColor = new Color(0.6f, 0.1f, 0.1f, 0.95f), // Crimson Red
+			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
+			CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 8, // Cool folder-tab shape
+			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+			BorderColor = new Color(0.9f, 0.4f, 0.4f, 1f),
+			ContentMarginLeft = 16, ContentMarginRight = 16, ContentMarginTop = 4, ContentMarginBottom = 4,
+			ShadowColor = new Color(0, 0, 0, 0.5f), ShadowSize = 4, ShadowOffset = new Vector2(0, 3)
+		};
+
+		StyleBoxFlat btnNormal = (StyleBoxFlat)baseStyle.Duplicate();
+		StyleBoxFlat btnHover = (StyleBoxFlat)baseStyle.Duplicate();
+		btnHover.BgColor = new Color(0.18f, 0.18f, 0.22f, 1f);
+		btnHover.BorderColor = new Color(1f, 0.85f, 0.3f, 1f); 
+		btnHover.ShadowSize = 14; btnHover.ShadowOffset = new Vector2(0, 10);
+
+		StyleBoxFlat btnPressed = (StyleBoxFlat)baseStyle.Duplicate();
+		btnPressed.BgColor = new Color(0.04f, 0.04f, 0.04f, 1f);
+		btnPressed.BorderColor = new Color(0.6f, 0.5f, 0.1f, 1f);
+		btnPressed.ShadowSize = 2; btnPressed.ShadowOffset = new Vector2(0, 2);
+
+		MasterTheme = new Theme();
+		MasterTheme.SetStylebox("panel", "PanelContainer", baseStyle);
+		MasterTheme.SetStylebox("normal", "Button", btnNormal);
+		MasterTheme.SetStylebox("hover", "Button", btnHover);
+		MasterTheme.SetStylebox("pressed", "Button", btnPressed);
+		MasterTheme.SetStylebox("focus", "Button", new StyleBoxEmpty());
+
+		// === NEW: Fix Dialogic's tiny black text globally! ===
+		MasterTheme.SetFontSize("normal_font_size", "RichTextLabel", 26);
+		MasterTheme.SetColor("default_color", "RichTextLabel", new Color(0.95f, 0.95f, 0.95f, 1f));
+		MasterTheme.SetFontSize("font_size", "Label", 22);
+		MasterTheme.SetColor("font_color", "Label", new Color(0.95f, 0.95f, 0.95f, 1f));
+
+		if (StatsLabel != null)
+		{
+			StatsLabel.AddThemeStyleboxOverride("normal", baseStyle);
+			StatsLabel.AddThemeColorOverride("default_color", new Color(0.95f, 0.95f, 0.95f, 1f));
+			
+			// === THE FIX: Force the sizes for both normal AND bold text! ===
+			StatsLabel.AddThemeFontSizeOverride("normal_font_size", 24);
+			StatsLabel.AddThemeFontSizeOverride("bold_font_size", 28); // Make the Name slightly bigger!
+			
+			StatsLabel.BbcodeEnabled = true;
+			StatsLabel.FitContent = true;
+			StatsLabel.ScrollActive = false;
+			StatsLabel.CustomMinimumSize = new Vector2(350, 0);
+			StatsLabel.ClipContents = false;
+		}
+
+		Button[] buttons = { AttackButton, EndTurnButton };
+		foreach (Button btn in buttons)
+		{
+			if (btn == null) continue;
+			btn.AddThemeStyleboxOverride("normal", btnNormal);
+			btn.AddThemeStyleboxOverride("hover", btnHover);
+			btn.AddThemeStyleboxOverride("pressed", btnPressed);
+			btn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+			btn.AddThemeFontSizeOverride("font_size", 24); 
+			AddButtonJuice(btn);
+		}
+	}
+
+	private void UpdateStatsUI()
+	{
+		if (StatsLabel == null) return;
+
+		if (_selectedUnit != null && _selectedUnit.Data != null)
+		{
+			// BBCode magic! Grey out used actions, pulse ready actions with color!
+			string moveStr = _selectedUnit.HasMoved ? "[color=#666666]Used[/color]" : "[color=#44ff44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
+			string atkStr = _selectedUnit.HasAttacked ? "[color=#666666]Used[/color]" : "[color=#ffaa44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
+			
+			StatsLabel.Text = $"[center][b][wave amp=20 freq=3]{_selectedUnit.Data.Profile.Name}[/wave][/b]\n" +
+							  $"[color=gold]Lv.{_selectedUnit.Data.Level}[/color] | HP: [color=#ff4444]{_selectedUnit.Data.CurrentHP}[/color]/{_selectedUnit.Data.MaxHP}\n" +
+							  $"Move: {moveStr} | Attack: {atkStr}[/center]";
+		}
+		else StatsLabel.Text = "[center]\nSelect a Unit...[/center]";
+
+		StatsLabel.PivotOffset = StatsLabel.Size / 2;
+		Tween popTween = CreateTween();
+		popTween.TweenProperty(StatsLabel, "scale", new Vector2(1.05f, 1.05f), 0.08f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		popTween.TweenProperty(StatsLabel, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+	}
+
+	private void AddButtonJuice(Button btn)
+	{
+		// Dynamically center the pivot point every time we hover so it scales from the center perfectly
+		btn.MouseEntered += () => {
+			btn.PivotOffset = btn.Size / 2;
+			CreateTween().TweenProperty(btn, "scale", new Vector2(1.08f, 1.08f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		};
+		
+		btn.MouseExited += () => {
+			CreateTween().TweenProperty(btn, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		};
+		
+		btn.ButtonDown += () => {
+			CreateTween().TweenProperty(btn, "scale", new Vector2(0.9f, 0.9f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		};
+		
+		btn.ButtonUp += () => {
+			CreateTween().TweenProperty(btn, "scale", new Vector2(1.08f, 1.08f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		};
 	}
 }

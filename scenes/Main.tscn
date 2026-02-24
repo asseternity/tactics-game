@@ -55,8 +55,10 @@ anchor_left = 1.0
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -273.0
-offset_top = -66.0
+offset_left = -293.0
+offset_top = -110.0
+offset_right = -20.0
+offset_bottom = -20.0
 grow_horizontal = 0
 grow_vertical = 0
 
@@ -74,14 +76,14 @@ text = "End Turn"
 anchors_preset = 2
 anchor_top = 1.0
 anchor_bottom = 1.0
-offset_top = -40.0
-offset_right = 40.0
+offset_left = 20.0
+offset_top = -60.0
+offset_right = 168.0
+offset_bottom = -20.0
 grow_vertical = 0
 
-[node name="StatsLabel" type="Label" parent="CanvasLayer/PanelContainer"]
+[node name="StatsLabel" type="RichTextLabel" parent="CanvasLayer/PanelContainer"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 25
-text = "Select a unit"
 
 [node name="DimOverlay" type="ColorRect" parent="CanvasLayer"]
 visible = false

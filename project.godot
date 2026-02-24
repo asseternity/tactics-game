@@ -29,9 +29,10 @@ directories/dtl_directory={
 }
 layout/style_directory={
 "": "res://dialogic_styles/Default.tres",
-"Default": "res://dialogic_styles/Default.tres"
+"Default": "res://dialogic_styles/Default.tres",
+"MyCustomStyle": "res://dialogic_ui/MyCustomStyle.tres"
 }
-layout/style_list=["res://dialogic_styles/Default.tres"]
+layout/style_list=["res://dialogic_styles/Default.tres", "res://dialogic_ui/MyCustomStyle.tres"]
 layout/default_style="res://dialogic_styles/Default.tres"
 variables={}
 glossary/default_case_sensitive=true

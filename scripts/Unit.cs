@@ -1,6 +1,7 @@
 // Unit.cs
 using Godot;
 using System.Threading.Tasks;
+using System.Collections.Generic;
 
 public partial class Unit : Node3D
 {
@@ -13,24 +14,22 @@ public partial class Unit : Node3D
 
 	private Sprite3D _sprite;
 	private Label3D _targetIcon;
-	
 	private SubViewport _uiViewport;
 	private Sprite3D _uiSprite;
 	private ProgressBar _hpBar;
-	private ProgressBar _hpPreviewBar; // NEW: The blinking bar underneath!
+	private ProgressBar _hpPreviewBar;
 	private Label _hpLabel;
 	private ProgressBar _xpBar;
 	private Label _xpLabel;
-	
 	private Tween _previewTween;
 	private bool _isPreviewing = false;
 
 	public override void _Ready()
 	{
 		_sprite = GetNode<Sprite3D>("Sprite3D");
-		
 		_targetIcon = new Label3D { Text = "▼", FontSize = 120, Modulate = new Color(1, 0.2f, 0.2f), OutlineModulate = new Color(0, 0, 0), OutlineSize = 10, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, Position = new Vector3(0, 2.9f, 0), Visible = false, RenderPriority = 20 };
 		AddChild(_targetIcon);
+
 		Tween bobTween = CreateTween().SetLoops();
 		bobTween.TweenProperty(_targetIcon, "position:y", 3.2f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
 		bobTween.TweenProperty(_targetIcon, "position:y", 2.9f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
@@ -43,39 +42,53 @@ public partial class Unit : Node3D
 		vbox.AddThemeConstantOverride("separation", 6);
 		_uiViewport.AddChild(vbox);
 
-		// === LAYERED HP BAR SETUP ===
+		// HP section
 		MarginContainer hpContainer = new MarginContainer { CustomMinimumSize = new Vector2(180, 35) };
-		
-		// Bottom Layer: The Preview Bar (Solid Red)
 		_hpPreviewBar = new ProgressBar { CustomMinimumSize = new Vector2(180, 35), ShowPercentage = false, Step = 0.1 };
 		_hpPreviewBar.AddThemeStyleboxOverride("background", CreateRoundedStyle(new Color(0.1f, 0.1f, 0.1f, 0.9f)));
 		_hpPreviewBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(1f, 0f, 0f, 1f)));
-		
-		// Top Layer: The Actual HP Bar (Green, but with a transparent background so the preview shows through!)
+
 		_hpBar = new ProgressBar { CustomMinimumSize = new Vector2(180, 35), ShowPercentage = false, Step = 0.1 };
-		_hpBar.AddThemeStyleboxOverride("background", new StyleBoxEmpty()); 
+		_hpBar.AddThemeStyleboxOverride("background", new StyleBoxEmpty());
 		_hpBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(0.2f, 0.9f, 0.2f, 1f)));
-		
-		_hpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Text = "HP" };
+
+		_hpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 		_hpLabel.AddThemeFontSizeOverride("font_size", 22);
 		_hpLabel.AddThemeConstantOverride("outline_size", 6);
 
-		// Stack them on top of each other!
 		hpContainer.AddChild(_hpPreviewBar);
 		hpContainer.AddChild(_hpBar);
 		hpContainer.AddChild(_hpLabel);
 		vbox.AddChild(hpContainer);
 
-		// XP BAR
-		_xpBar = new ProgressBar { CustomMinimumSize = new Vector2(180, 25), ShowPercentage = false, Step = 0.1 };
+		// === XP BAR – PERFECTLY CENTERED "Level X" ===
+		MarginContainer xpContainer = new MarginContainer { CustomMinimumSize = new Vector2(180, 35) };
+
+		_xpBar = new ProgressBar { 
+			CustomMinimumSize = new Vector2(180, 25), 
+			ShowPercentage = false, 
+			Step = 0.1f 
+		};
 		_xpBar.AddThemeStyleboxOverride("background", CreateRoundedStyle(new Color(0.1f, 0.1f, 0.1f, 0.9f)));
 		_xpBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(1f, 0.8f, 0f, 1f)));
-		_xpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+
+		_xpLabel = new Label 
+		{ 
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		
+		// === THE FIX ===
+		// This forces the label to expand and perfectly overlay the entire Progress Bar.
+		_xpLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		
 		_xpLabel.AddThemeFontSizeOverride("font_size", 16);
 		_xpLabel.AddThemeColorOverride("font_color", new Color(1f, 0.9f, 0.6f));
 		_xpLabel.AddThemeConstantOverride("outline_size", 5);
+
 		_xpBar.AddChild(_xpLabel);
-		vbox.AddChild(_xpBar);
+		xpContainer.AddChild(_xpBar);
+		vbox.AddChild(xpContainer);
 
 		_uiSprite = new Sprite3D { Texture = _uiViewport.GetTexture(), Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, RenderPriority = 10, PixelSize = 0.008f, Position = new Vector3(0, 2.1f, 0) };
 		AddChild(_uiSprite);
@@ -85,14 +98,13 @@ public partial class Unit : Node3D
 	{
 		return new StyleBoxFlat { BgColor = color, CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthBottom = 3, BorderWidthTop = 3, BorderWidthLeft = 3, BorderWidthRight = 3, BorderColor = new Color(0, 0, 0, 1f) };
 	}
-	
+
 	public void Setup(PersistentUnit data, bool isFriendly)
 	{
 		Data = data;
 		IsFriendly = isFriendly;
 		_hpBar.MaxValue = Data.MaxHP;
 		_hpPreviewBar.MaxValue = Data.MaxHP;
-
 		if (IsFriendly)
 		{
 			_xpBar.Visible = true;
@@ -118,47 +130,44 @@ public partial class Unit : Node3D
 	{
 		if (_sprite == null || Data == null) return;
 
-		// Only update HP text and bars if we aren't currently previewing an attack!
 		if (!_isPreviewing)
 		{
-			_hpLabel.Text = $"HP {Data.CurrentHP}/{Data.MaxHP}";
+			_hpLabel.Text = $"{Data.CurrentHP}/{Data.MaxHP}";   // ← "HP" removed
 			CreateTween().TweenProperty(_hpBar, "value", (double)Data.CurrentHP, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
-			_hpPreviewBar.Value = Data.CurrentHP; // Keep the preview bar secretly synced
+			_hpPreviewBar.Value = Data.CurrentHP;
 		}
-		
+
 		if (IsFriendly) _xpLabel.Text = $"Level {Data.Level}";
 
 		Color spriteColor;
 		if (IsSelected) spriteColor = new Color(1.0f, 0.95f, 0.4f, 1.0f);
 		else if (IsFriendly && HasMoved && HasAttacked) spriteColor = new Color(0.85f, 0.95f, 0.85f, 0.55f);
 		else if (IsFriendly) spriteColor = new Color(0.9f, 1.0f, 0.9f, 1.0f);
-		else spriteColor = new Color(1.0f, 0.72f, 0.72f, 1.0f); 
+		else spriteColor = new Color(1.0f, 0.72f, 0.72f, 1.0f);
 
 		if (!_isPreviewing) _sprite.Modulate = spriteColor;
 	}
 
-	// === NEW: DAMAGE PREVIEW JUICE ===
-	public void PreviewDamage(int dmg)
+	// === DAMAGE RANDOMIZATION (new) ===
+	public int GetMinDamage() => Mathf.FloorToInt(Data.AttackDamage * 0.8f);
+	public int GetMaxDamage() => Mathf.CeilToInt(Data.AttackDamage * 1.2f);
+
+	public void PreviewDamage(int dmg)   // Called with MIN damage for preview
 	{
 		if (_isPreviewing) return;
 		_isPreviewing = true;
-		
 		int newHp = Mathf.Max(0, Data.CurrentHP - dmg);
-		
-		// Shrink the top bar instantly, revealing the red preview bar underneath!
-		_hpBar.Value = newHp; 
-		_hpLabel.Text = $"HP {newHp}/{Data.MaxHP} (-{Mathf.Min(dmg, Data.CurrentHP)})";
-		
+
+		_hpBar.Value = newHp;
+		_hpLabel.Text = $"{newHp}/{Data.MaxHP} (-{Mathf.Min(dmg, Data.CurrentHP)})";
+
 		if (_previewTween != null && _previewTween.IsValid()) _previewTween.Kill();
 		_previewTween = CreateTween().SetLoops();
-		
+
 		StyleBoxFlat previewStyle = (StyleBoxFlat)_hpPreviewBar.GetThemeStylebox("fill");
-		
-		// Blink the UI bar Red to White
 		_previewTween.TweenProperty(previewStyle, "bg_color", new Color(1f, 1f, 1f, 1f), 0.15f);
 		_previewTween.TweenProperty(previewStyle, "bg_color", new Color(1f, 0f, 0f, 1f), 0.15f);
-		
-		// If the attack is LETHAL, blink the enemy sprite too!
+
 		if (newHp <= 0)
 		{
 			_previewTween.Parallel().TweenProperty(_sprite, "modulate", new Color(5f, 5f, 5f, 1f), 0.15f);
@@ -170,84 +179,86 @@ public partial class Unit : Node3D
 	{
 		if (!_isPreviewing) return;
 		_isPreviewing = false;
-		
 		if (_previewTween != null && _previewTween.IsValid()) _previewTween.Kill();
-		
+
 		StyleBoxFlat previewStyle = (StyleBoxFlat)_hpPreviewBar.GetThemeStylebox("fill");
-		previewStyle.BgColor = new Color(1f, 0f, 0f, 1f); // Reset red
-		UpdateVisuals(); // Restores normal text, bar values, and sprite colors
+		previewStyle.BgColor = new Color(1f, 0f, 0f, 1f);
+		UpdateVisuals();
 	}
-	// =================================
 
 	public async Task TakeDamage(int dmg, Unit attacker = null)
 	{
-		ClearPreview(); 
+		ClearPreview();
 		Data.CurrentHP -= dmg;
 		if (Data.CurrentHP < 0) Data.CurrentHP = 0;
-		UpdateVisuals(); 
-		
+		UpdateVisuals();
+
 		if (Data.CurrentHP <= 0)
 		{
 			if (attacker != null && !this.IsFriendly)
-			{
-				// === BUG 5 FIX: Dynamic XP Reward ===
-				await attacker.GainXP(this.Data.XPReward); 
-			}
+				await attacker.GainXP(this.Data.XPReward);
 
-			OnDied?.Invoke(this); 
-			
+			OnDied?.Invoke(this);
+
 			Tween deathTween = CreateTween();
 			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.25f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 			deathTween.Finished += () => QueueFree();
 		}
 	}
 
+	// (rest of file unchanged: GainXP, MoveTo, SetSelected, NewTurn, SetTargetable, etc.)
 	public async Task GainXP(int amount)
 	{
 		if (!IsFriendly) return;
 		Data.CurrentXP += amount;
-		
 		Tween xpTween = CreateTween();
 		xpTween.TweenProperty(_xpBar, "value", (double)Data.CurrentXP, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 		await ToSignal(GetTree().CreateTimer(0.6f), "timeout");
 
 		if (Data.CurrentXP >= Data.MaxXP)
 		{
-			Data.Level++; 
-			Data.CurrentXP -= Data.MaxXP; 
-			Data.MaxXP = Mathf.RoundToInt(Data.MaxXP * 1.5f); 
-			
+			Data.Level++;
+			Data.CurrentXP -= Data.MaxXP;
+			Data.MaxXP = Mathf.RoundToInt(Data.MaxXP * 1.5f);
+
 			Label3D lvlUp = new Label3D { Text = "LEVEL UP!", Modulate = new Color(1, 0.8f, 0), FontSize = 80, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, OutlineModulate = new Color(0,0,0), OutlineSize = 10, Position = GlobalPosition + new Vector3(0, 3f, 0) };
 			GetParent().AddChild(lvlUp);
-			
+
 			Tween lvlTween = CreateTween();
 			lvlTween.TweenProperty(lvlUp, "position:y", lvlUp.Position.Y + 1.5f, 1.5f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 			lvlTween.Parallel().TweenProperty(lvlUp, "modulate:a", 0f, 1.5f).SetEase(Tween.EaseType.In);
 			lvlTween.Finished += () => lvlUp.QueueFree();
 
-			_xpBar.MaxValue = Data.MaxXP; 
-			_xpBar.Value = 0; 
+			_xpBar.MaxValue = Data.MaxXP;
+			_xpBar.Value = 0;
 			UpdateVisuals();
-			
-			// === THE FIX: TRIGGER THE UI ===
-			// Pause the entire game loop to wait for the player's choice!
+
 			await GameManager.Instance.ShowLevelUpScreen(this);
-			
-			await GainXP(0); 
+			await GainXP(0);
 		}
 	}
 
-	public void MoveTo(Vector3 targetPos)
+	public async Task MoveAlongPath(List<Vector3> path)
 	{
 		HasMoved = true;
 		UpdateVisuals();
-		Tween moveTween = CreateTween();
-		moveTween.Parallel().TweenProperty(this, "position:x", targetPos.X, 0.3f);
-		moveTween.Parallel().TweenProperty(this, "position:z", targetPos.Z, 0.3f);
-		Tween hopTween = CreateTween();
-		float originalY = Position.Y;
-		hopTween.TweenProperty(this, "position:y", originalY + 1.2f, 0.15f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
-		hopTween.TweenProperty(this, "position:y", originalY, 0.15f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+
+		foreach (Vector3 stepPos in path)
+		{
+			Tween moveTween = CreateTween();
+			// Fast horizontal movement to the next tile
+			moveTween.Parallel().TweenProperty(this, "position:x", stepPos.X, 0.18f);
+			moveTween.Parallel().TweenProperty(this, "position:z", stepPos.Z, 0.18f);
+
+			// Board-game style plumbob hop
+			Tween hopTween = CreateTween();
+			float originalY = Position.Y;
+			hopTween.TweenProperty(this, "position:y", originalY + 0.8f, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+			hopTween.TweenProperty(this, "position:y", originalY, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+
+			// Wait for this specific tile hop to finish before starting the next one
+			await ToSignal(moveTween, "finished");
+		}
 	}
 
 	public void SetSelected(bool selected) { IsSelected = selected; UpdateVisuals(); }

@@ -14,11 +14,6 @@ transform = Transform3D(0.3, 0, 0, 0, 0.3, 0, 0, 0, 0.3, 0, 0.71, 0)
 billboard = 2
 texture = ExtResource("1_h85lg")
 
-[node name="Label3D" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.65, 0)
-billboard = 1
-text = "Health 10/10"
-
 [node name="ClickArea" type="Area3D" parent="."]
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="ClickArea"]

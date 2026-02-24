@@ -94,7 +94,7 @@ public static class GameScript
 			ScriptEvent.Battle(new BattleSetup 
 			{
 				FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-				Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)), new UnitSpawn("Goblin", new Vector3(4,0,6)), new UnitSpawn("Goblin", new Vector3(6,0,4)) }
+				Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) }
 			}),
 			
 			ScriptEvent.Dialogue("res://dialogic_timelines/PostFirstBattle.dtl"),
