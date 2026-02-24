@@ -5,6 +5,7 @@ public partial class Unit : Node3D
 {
 	[Export] public int MaxHP = 10;
 	[Export] public int AttackDamage = 3;
+	[Export] public int AttackRange = 1;
 	[Export] public bool IsFriendly = true;
 	
 	public event System.Action<Unit> OnDied;
@@ -17,12 +18,70 @@ public partial class Unit : Node3D
 
 	private Sprite3D _sprite;
 	private Label3D _statsLabel;
+	private Label3D _targetIcon;
 
 	public override void _Ready()
 	{
 		_sprite = GetNode<Sprite3D>("Sprite3D");
 		_statsLabel = GetNode<Label3D>("Label3D");
+		
+		// === TARGET ICON SETUP ===
+		_targetIcon = new Label3D();
+		_targetIcon.Text = "▼";
+		_targetIcon.FontSize = 120;
+		_targetIcon.Modulate = new Color(1, 0.2f, 0.2f); // Bright red
+		_targetIcon.OutlineModulate = new Color(0, 0, 0);
+		_targetIcon.OutlineSize = 10;
+		_targetIcon.Billboard = BaseMaterial3D.BillboardModeEnum.Enabled;
+		_targetIcon.NoDepthTest = true;
+		_targetIcon.Position = new Vector3(0, 2.5f, 0); // Float above their head
+		_targetIcon.Visible = false;
+		AddChild(_targetIcon);
+
+		// Make it bob up and down forever
+		Tween bobTween = CreateTween().SetLoops();
+		bobTween.TweenProperty(_targetIcon, "position:y", 2.8f, 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		bobTween.TweenProperty(_targetIcon, "position:y", 2.5f, 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		// =========================
+		
 		CurrentHP = MaxHP;
+		UpdateVisuals();
+	}
+	
+	public void Setup(UnitProfile profile, bool isFriendly)
+	{
+		UnitName = profile.Name;
+		MaxHP = profile.MaxHP;
+		CurrentHP = MaxHP;
+		AttackDamage = profile.AttackDamage;
+		AttackRange = profile.AttackRange;
+		IsFriendly = isFriendly;
+
+		// Load the texture dynamically
+		Texture2D tex = GD.Load<Texture2D>(profile.SpritePath);
+		
+		if (tex != null)
+		{
+			_sprite.Texture = tex;
+
+			// === NORMALIZE SPRITE HEIGHT ===
+			// 1. Define how tall you want ALL units to be in 3D space (e.g., 1.8 Godot units)
+			float targetHeight = 1.8f; 
+			
+			// 2. Calculate its natural 3D height based on pixel height and the Sprite3D's PixelSize
+			float naturalHeight = tex.GetHeight() * _sprite.PixelSize;
+			
+			// 3. Find the exact multiplier needed to make the natural height equal the target height
+			float scaleFactor = targetHeight / naturalHeight;
+			
+			// 4. Apply the scale uniformly so it doesn't stretch weirdly
+			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+		}
+		else
+		{
+			GD.PrintErr($"❌ Failed to load sprite: {profile.SpritePath}");
+		}
+
 		UpdateVisuals();
 	}
 
@@ -115,45 +174,14 @@ public partial class Unit : Node3D
 			OnDied?.Invoke(this); // <-- ADD THIS to announce the death!
 			
 			Tween deathTween = CreateTween();
-			deathTween.TweenProperty(this, "scale", Vector3.Zero, 0.25f)
+			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.25f)
 					  .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 			deathTween.Finished += () => QueueFree();
 		}
 	}
 	
-	public void Setup(UnitProfile profile, bool isFriendly)
+	public void SetTargetable(bool isTargetable)
 	{
-		UnitName = profile.Name;
-		MaxHP = profile.MaxHP;
-		CurrentHP = MaxHP;
-		AttackDamage = profile.AttackDamage;
-		IsFriendly = isFriendly;
-
-		// Load the texture dynamically
-		Texture2D tex = GD.Load<Texture2D>(profile.SpritePath);
-		
-		if (tex != null)
-		{
-			_sprite.Texture = tex;
-
-			// === NORMALIZE SPRITE HEIGHT ===
-			// 1. Define how tall you want ALL units to be in 3D space (e.g., 1.8 Godot units)
-			float targetHeight = 1.8f; 
-			
-			// 2. Calculate its natural 3D height based on pixel height and the Sprite3D's PixelSize
-			float naturalHeight = tex.GetHeight() * _sprite.PixelSize;
-			
-			// 3. Find the exact multiplier needed to make the natural height equal the target height
-			float scaleFactor = targetHeight / naturalHeight;
-			
-			// 4. Apply the scale uniformly so it doesn't stretch weirdly
-			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
-		}
-		else
-		{
-			GD.PrintErr($"❌ Failed to load sprite: {profile.SpritePath}");
-		}
-
-		UpdateVisuals();
+		if (_targetIcon != null) _targetIcon.Visible = isTargetable;
 	}
 }
