@@ -32,6 +32,10 @@ public partial class GameManager : Node3D
 	// === STORY SYSTEM ===
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	private List<ScriptEvent> _mainScript = new();
+	
+	// NEW: Our Persistent Party!
+	private List<PersistentUnit> _party = new(); 
+	
 	private int _currentScriptIndex = -1;
 
 	// Game State
@@ -45,72 +49,106 @@ public partial class GameManager : Node3D
 	// === DIALOGIC INTEGRATION ===
 	private Node _dialogic;
 	private bool _dialogueActive = false;
-	private bool _hasPlayedFirstTurnDialogue = false;
 
 	public override void _Ready()
 	{
-		// 1. Fill the Database
 		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 15, 4, 1);
 		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 8, 5, 2);
 		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1);
 		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1);
 
-		// 2. Write the Script! (Look how clean this is)
-		_mainScript = new List<ScriptEvent>
-		{
-			ScriptEvent.Dialogue("res://dialogic_timelines/Intro.dtl"),
-			
-			ScriptEvent.Battle(new BattleSetup 
-			{
-				Friendlies = { new UnitSpawn("Knight", new Vector3(0,0,0)), new UnitSpawn("Archer", new Vector3(2,0,0)) },
-				Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) }
-			}),
-			
-			ScriptEvent.Dialogue("res://dialogic_timelines/PostFirstBattle.dtl"),
-			
-			ScriptEvent.Battle(new BattleSetup 
-			{
-				Friendlies = { new UnitSpawn("Knight", new Vector3(0,0,0)), new UnitSpawn("Archer", new Vector3(2,0,0)) },
-				Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)), new UnitSpawn("Goblin", new Vector3(4,0,4)) }
-			})
-		};
+		// CREATE THE PARTY! (They will persist forever now)
+		_party.Add(new PersistentUnit(_unitDatabase["Knight"]));
+		_party.Add(new PersistentUnit(_unitDatabase["Archer"]));
 
-		// 3. Setup standard game stuff
+		// === THE FIX: LOAD THE SCRIPT HERE ===
+		_mainScript = GameScript.GetMainScript();
+		// =====================================
+
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
-		EndTurnButton.Pressed += StartEnemyTurn; // End turn now ONLY ends the turn!
+		EndTurnButton.Pressed += StartEnemyTurn; 
 		ActionMenu.Visible = false;
 
 		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
 		_dialogic.Connect("timeline_ended", new Callable(this, MethodName.OnTimelineEnded));
 		CallDeferred("UpdateStatsUI");
 
-		// 4. Action! Start the game
 		AdvanceScript();
 	}
 
-	private void SpawnUnit(UnitProfile profile, bool isFriendly, Vector3 pos)
+	private async void StartBattle(BattleSetup data)
+	{
+		GD.Print("⚔️ Starting Battle!");
+		StatsLabel.Text = "Setting up the board...";
+		await ClearBoardAsync();
+		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+
+		// 1. Heal the party before battle
+		foreach (var hero in _party) hero.HealBetweenBattles();
+
+		// 2. Spawn the party at the BattleSetup's designated tiles
+		for (int i = 0; i < Mathf.Min(_party.Count, data.FriendlySpawns.Count); i++)
+		{
+			SpawnUnit(_party[i], true, data.FriendlySpawns[i]);
+		}
+
+		// 3. Spawn the fresh enemies
+		foreach (var e in data.Enemies) 
+		{
+			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, e.Position);
+		}
+
+		_currentState = State.PlayerTurn;
+		StatsLabel.Text = "Battle Start! Your Turn.";
+		ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
+		ShowActions(true);
+	}
+
+	private void SpawnUnit(PersistentUnit data, bool isFriendly, Vector3 pos)
 	{
 		Unit u = UnitScene.Instantiate<Unit>();
 		AddChild(u);
 		u.GlobalPosition = pos;
-		u.Setup(profile, isFriendly);
+		
+		// Pass the persistent data in!
+		u.Setup(data, isFriendly);
 		
 		u.OnDied += HandleUnitDeath; 
-		
 		_units.Add(u);
 
-		// === GAME JUICE: SPAWN POP-IN ===
-		// Start the whole unit practically invisible instead of true zero
 		u.Scale = new Vector3(0.001f, 0.001f, 0.001f);
-		
 		Tween spawnTween = CreateTween();
+		spawnTween.TweenProperty(u, "scale", Vector3.One, 0.35f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+	}
+
+	private async Task PerformAttackAsync(Unit attacker, Unit target)
+	{
+		Vector3 startPos = attacker.GlobalPosition;
+		Vector3 attackDirection = (target.GlobalPosition - startPos).Normalized();
+		Vector3 lungePos = startPos + (attackDirection * 0.8f);
+
+		Tween tween = CreateTween();
+		tween.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		tween.TweenProperty(attacker, "global_position", startPos, 0.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.InOut);
+
+		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
 		
-		// Pop them up to full size with a bouncy rubber-band effect!
-		spawnTween.TweenProperty(u, "scale", Vector3.One, 0.35f)
-				  .SetTrans(Tween.TransitionType.Bounce)
-				  .SetEase(Tween.EaseType.Out);
-		// ================================
+		// Crucial: Pass the attacker into TakeDamage so Unit.cs knows who to give XP to!
+		await target.TakeDamage(attacker.Data.AttackDamage, attacker);
+		
+		SpawnFloatingDamage(target.GlobalPosition, attacker.Data.AttackDamage);
+
+		if (target.GetNodeOrNull<Sprite3D>("Sprite3D") is Sprite3D targetSprite)
+		{
+			Tween flashTween = CreateTween();
+			flashTween.TweenProperty(targetSprite, "modulate", new Color(5, 0.5f, 0.5f), 0.05f);
+			flashTween.TweenProperty(targetSprite, "modulate", new Color(1, 1, 1), 0.1f);
+		}
+
+		attacker.HasAttacked = true;
+		attacker.UpdateVisuals();
+		RefreshTargetIcons();
 	}
 	
 	private void HandleUnitDeath(Unit deadUnit)
@@ -253,7 +291,7 @@ public partial class GameManager : Node3D
 	{
 		if (_selectedUnit == null) return;
 
-		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) <= _selectedUnit.AttackRange)
+		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) <= _selectedUnit.Data.AttackRange)
 		{
 			// Wait for the animation and damage to apply
 			await PerformAttackAsync(_selectedUnit, target);
@@ -331,21 +369,21 @@ public partial class GameManager : Node3D
 
 	private void ShowUnitInfo(Unit u)
 	{
-		if (StatsLabel != null)
-			StatsLabel.Text = $"Enemy Unit\nHP: {u.CurrentHP}/{u.MaxHP}\nDmg: {u.AttackDamage}";
+		if (StatsLabel != null && u.Data != null)
+			StatsLabel.Text = $"Enemy Unit\nLv.{u.Data.Level} HP: {u.Data.CurrentHP}/{u.Data.MaxHP}\nDmg: {u.Data.AttackDamage}";
 	}
 
 	private void UpdateStatsUI()
 	{
 		if (StatsLabel == null) return;
 
-		if (_selectedUnit != null)
+		if (_selectedUnit != null && _selectedUnit.Data != null)
 		{
 			string moveStr = _selectedUnit.HasMoved ? "[USED]" : "[READY]";
 			string atkStr = _selectedUnit.HasAttacked ? "[USED]" : "[READY]";
 			
-			StatsLabel.Text = $"Selected: Friendly\n" +
-							  $"HP: {_selectedUnit.CurrentHP}/{_selectedUnit.MaxHP}\n" +
+			StatsLabel.Text = $"Selected: {_selectedUnit.Data.Profile.Name}\n" +
+							  $"Lv.{_selectedUnit.Data.Level} HP: {_selectedUnit.Data.CurrentHP}/{_selectedUnit.Data.MaxHP}\n" +
 							  $"Move: {moveStr}\n" +
 							  $"Attack: {atkStr}";
 		}
@@ -436,6 +474,7 @@ public partial class GameManager : Node3D
 		_currentState = State.EnemyTurn;
 		ShowActions(false);
 		DeselectUnit();
+		RefreshTargetIcons();
 		if (StatsLabel != null) StatsLabel.Text = "Enemy Turn...";
 
 		ShowTurnAnnouncer("ENEMY TURN", new Color(1.0f, 0.2f, 0.2f));
@@ -452,10 +491,8 @@ public partial class GameManager : Node3D
 
 			Unit bestTarget = null;
 			Vector3 bestMovePos = enemy.GlobalPosition;
-			float bestScore = -9999f; // Start with a terrible score
+			float bestScore = -9999f; 
 
-			// === 1. TACTICAL EVALUATION ===
-			// Look at every single player on the board and score them
 			foreach (var player in players)
 			{
 				float targetScore = 0;
@@ -463,14 +500,12 @@ public partial class GameManager : Node3D
 				bool canAttackThisTurn = false;
 				int distToPlayer = GetGridDistance(enemy.GlobalPosition, player.GlobalPosition);
 
-				// If we are ALREADY in range, we don't need to move
-				if (distToPlayer <= enemy.AttackRange)
+				if (distToPlayer <= enemy.Data.AttackRange)
 				{
 					canAttackThisTurn = true;
 				}
 				else
 				{
-					// Scan the grid to see if we can reach a tile that puts us in attack range
 					int closestWeCanGet = distToPlayer;
 					
 					foreach (var tilePos in _grid.Keys)
@@ -480,15 +515,14 @@ public partial class GameManager : Node3D
 						{
 							int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
 							
-							if (distFromTileToPlayer <= enemy.AttackRange)
+							if (distFromTileToPlayer <= enemy.Data.AttackRange)
 							{
 								canAttackThisTurn = true;
 								optimalTile = worldPos;
-								break; // We found a tile that lets us attack! Good enough.
+								break; 
 							}
 							else if (distFromTileToPlayer < closestWeCanGet)
 							{
-								// If we can't reach them, find the tile that gets us the closest
 								closestWeCanGet = distFromTileToPlayer;
 								optimalTile = worldPos;
 							}
@@ -496,20 +530,11 @@ public partial class GameManager : Node3D
 					}
 				}
 
-				// === 2. THE SCORING MATH ===
-				// Huge bonus if we can actually hit them this turn
 				if (canAttackThisTurn) targetScore += 1000;
-				
-				// Prioritize targets with lower HP (Subtracting their HP makes lower HP worth more points)
-				targetScore -= player.CurrentHP * 10;
-				
-				// Massive bonus if this attack will kill the target outright!
-				if (canAttackThisTurn && player.CurrentHP <= enemy.AttackDamage) targetScore += 2000;
-				
-				// Tie-breaker: Prefer closer targets so we don't waste time walking across the map
+				targetScore -= player.Data.CurrentHP * 10; // Read from Data
+				if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.AttackDamage) targetScore += 2000; // Read from Data
 				targetScore -= distToPlayer;
 
-				// Is this the best target we've seen so far?
 				if (targetScore > bestScore)
 				{
 					bestScore = targetScore;
@@ -517,34 +542,25 @@ public partial class GameManager : Node3D
 					bestMovePos = optimalTile;
 				}
 			}
-
-			// === 3. EXECUTE THE BEST PLAN ===
 			
-			// Move to the optimal tile
 			if (bestMovePos != enemy.GlobalPosition)
 			{
 				enemy.MoveTo(bestMovePos);
 				await ToSignal(GetTree().CreateTimer(0.35f), "timeout"); 
 			}
 
-			// Attack if our best target is in range!
-			if (bestTarget != null && GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.AttackRange)
+			if (bestTarget != null && GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.Data.AttackRange)
 			{
 				await PerformAttackAsync(enemy, bestTarget); 
-				
-				// Abort early if the player won during this attack animation
 				if (_currentState != State.EnemyTurn) return;
-				
 				await ToSignal(GetTree().CreateTimer(0.4f), "timeout"); 
 			}
 			
-			// Exhaust the enemy visually
 			enemy.HasMoved = true;
 			enemy.HasAttacked = true;
 			enemy.UpdateVisuals();
 		}
 
-		// Reset friendlies for the new turn
 		foreach (var u in _units.Where(x => IsInstanceValid(x) && x.IsFriendly)) u.NewTurn();
 		
 		ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
@@ -555,15 +571,6 @@ public partial class GameManager : Node3D
 	
 	private void OnEndTurnPressed()
 	{
-		// If the dialogue hasn't been played yet, play it and return
-		if (!_hasPlayedFirstTurnDialogue)
-		{
-			_hasPlayedFirstTurnDialogue = true;
-			StartDialogue("res://dialogic_timelines/PostFirstBattle.dtl");
-			return;
-		}
-
-		// Otherwise, proceed to the enemy turn as normal
 		StartEnemyTurn();
 	}
 
@@ -731,27 +738,6 @@ public partial class GameManager : Node3D
 		}
 	}
 
-	private async void StartBattle(BattleSetup data)
-	{
-		GD.Print("⚔️ Starting Battle!");
-		StatsLabel.Text = "Setting up the board...";
-		
-		// 1. Wait for the old pieces to pop off the board
-		await ClearBoardAsync();
-
-		// 2. A tiny dramatic pause while the board is empty
-		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
-
-		// 3. Spawn the new pieces!
-		foreach (var f in data.Friendlies) SpawnUnit(_unitDatabase[f.ProfileId], true, f.Position);
-		foreach (var e in data.Enemies) SpawnUnit(_unitDatabase[e.ProfileId], false, e.Position);
-
-		_currentState = State.PlayerTurn;
-		StatsLabel.Text = "Battle Start! Your Turn.";
-		ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
-		ShowActions(true);
-	}
-
 	private async Task ClearBoardAsync()
 	{
 		DeselectUnit();
@@ -777,40 +763,13 @@ public partial class GameManager : Node3D
 		// Wait for the shrink animations to finish before continuing the code
 		await ToSignal(GetTree().CreateTimer(0.25f), "timeout");
 	}
-	
-	private async Task PerformAttackAsync(Unit attacker, Unit target)
-	{
-		Vector3 startPos = attacker.GlobalPosition;
-		Vector3 attackDirection = (target.GlobalPosition - startPos).Normalized();
-		Vector3 lungePos = startPos + (attackDirection * 0.8f);
 
-		Tween tween = CreateTween();
-		tween.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
-		tween.TweenProperty(attacker, "global_position", startPos, 0.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.InOut);
-
-		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
-		
-		// Damage & Visuals
-		target.TakeDamage(attacker.AttackDamage);
-		SpawnFloatingDamage(target.GlobalPosition, attacker.AttackDamage);
-
-		if (target.GetNodeOrNull<Sprite3D>("Sprite3D") is Sprite3D targetSprite)
-		{
-			Tween flashTween = CreateTween();
-			flashTween.TweenProperty(targetSprite, "modulate", new Color(5, 0.5f, 0.5f), 0.05f);
-			flashTween.TweenProperty(targetSprite, "modulate", new Color(1, 1, 1), 0.1f);
-		}
-
-		attacker.HasAttacked = true;
-		attacker.UpdateVisuals();
-	}
-	
 	private void CheckAutoExhaust(Unit u)
 	{
 		if (!u.IsFriendly || u.HasAttacked) return;
 
 		// Is there ANY enemy within this specific unit's attack range?
-		bool enemyInRange = _units.Any(enemy => !enemy.IsFriendly && IsInstanceValid(enemy) && GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.AttackRange);
+		bool enemyInRange = _units.Any(enemy => !enemy.IsFriendly && IsInstanceValid(enemy) && GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.Data.AttackRange);
 
 		// If no enemies to hit, automatically use up their attack action so they dim
 		if (!enemyInRange)
@@ -895,57 +854,11 @@ public partial class GameManager : Node3D
 			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
 			{
 				// If the unit is an enemy AND within our exact attack range, turn the icon on!
-				if (!u.IsFriendly && GetGridDistance(_selectedUnit.GlobalPosition, u.GlobalPosition) <= _selectedUnit.AttackRange)
+				if (!u.IsFriendly && GetGridDistance(_selectedUnit.GlobalPosition, u.GlobalPosition) <= _selectedUnit.Data.AttackRange)
 				{
 					u.SetTargetable(true);
 				}
 			}
 		}
 	}
-}
-
-// === GAME DATA STRUCTURES ===
-
-public struct UnitProfile
-{
-	public string Name;
-	public string SpritePath;
-	public int MaxHP;
-	public int AttackDamage;
-	public int AttackRange; 
-
-	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange)
-	{
-		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
-		AttackDamage = attackDmg; AttackRange = attackRange;
-	}
-}
-
-public struct UnitSpawn
-{
-	public string ProfileId;
-	public Vector3 Position;
-	public UnitSpawn(string profileId, Vector3 position)
-	{
-		ProfileId = profileId; Position = position;
-	}
-}
-
-public class BattleSetup
-{
-	public List<UnitSpawn> Friendlies = new();
-	public List<UnitSpawn> Enemies = new();
-}
-
-public enum EventType { Dialogue, Battle }
-
-public class ScriptEvent
-{
-	public EventType Type;
-	public string TimelinePath;
-	public BattleSetup BattleData;
-
-	// Helper methods to make writing the script incredibly clean
-	public static ScriptEvent Dialogue(string path) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path };
-	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
 }
