@@ -19,7 +19,7 @@
 &"portraits": {
 "Default": {
 "export_overrides": {
-"image": "\"res://assets/knight.png\""
+"image": "\"res://assets/archer.png\""
 },
 "ignore_char_scale": false,
 "mirror": false,

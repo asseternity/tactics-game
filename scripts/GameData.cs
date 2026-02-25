@@ -1,3 +1,4 @@
+// GameData.cs
 using Godot;
 using System.Collections.Generic;
 
@@ -32,7 +33,11 @@ public class PersistentUnit
 	public int Movement;
 	public int XPReward; 
 
-	public PersistentUnit(UnitProfile profile)
+	// === NEW: Choice of Games style Relationship Tracking ===
+	public bool IsPlayerCharacter = false;
+	public Dictionary<string, int> Relationships = new();
+
+	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
 		Profile = profile;
 		MaxHP = profile.MaxHP;
@@ -41,6 +46,15 @@ public class PersistentUnit
 		AttackRange = profile.AttackRange;
 		Movement = profile.Movement;
 		XPReward = profile.XPReward;
+		IsPlayerCharacter = isPlayer;
+
+		// Initialize default CoG-style relationships for companions!
+		if (!IsPlayerCharacter)
+		{
+			Relationships.Add("Respect", 50);
+			Relationships.Add("Agreement", 50);
+			Relationships.Add("Fear", 10);
+		}
 	}
 
 	public void HealBetweenBattles()
@@ -58,11 +72,21 @@ public struct UnitSpawn
 	public UnitSpawn(string profileId, Vector3 position) { ProfileId = profileId; Position = position; }
 }
 
+// === NEW: Environment Enums ===
+public enum GroundType { Grass, Dirt, Marble }
+public enum LightingMood { Noon, Morning, Night, Indoors }
+
 public class BattleSetup
 {
 	public List<Vector3> FriendlySpawns = new(); 
 	public List<UnitSpawn> Enemies = new();
 	public List<MidBattleEvent> MidBattleEvents = new();
+	
+	public GroundType Ground = GroundType.Grass;
+	public LightingMood Light = LightingMood.Noon;
+	
+	// === NEW: Tactical Elevation! ===
+	public bool ElevationEnabled = false;
 }
 
 public enum EventType { Dialogue, Battle, AddPartyMember, JumpToSection } // <-- NEW: Party Add Event
@@ -98,7 +122,10 @@ public static class GameScript
 					{
 						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
 						Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) },
-						MidBattleEvents = { new MidBattleEvent(2, "res://dialogic_timelines/TauntTurn1.dtl") }
+						MidBattleEvents = { new MidBattleEvent(2, "res://dialogic_timelines/TauntTurn1.dtl") },
+						Ground = GroundType.Dirt,
+						Light = LightingMood.Morning,
+						ElevationEnabled = true
 					}),
 					// The Dialogic choice here will fire a signal to interrupt the flow.
 					ScriptEvent.Dialogue("res://dialogic_timelines/Intro.dtl") 
@@ -113,8 +140,11 @@ public static class GameScript
 						Enemies = { 
 							new UnitSpawn("Goblin", new Vector3(4,0,4)), 
 							new UnitSpawn("Goblin", new Vector3(6,0,4)), 
-							new UnitSpawn("Goblin", new Vector3(6,0,6)) 
-						}
+							new UnitSpawn("Goblin", new Vector3(6,0,6))
+						}, // <--- THE FIX: This bracket closes the Enemies list!
+						Ground = GroundType.Grass,
+						Light = LightingMood.Night,
+						ElevationEnabled = true
 					}),
 					// === NEW: Converge back to the main story! ===
 					ScriptEvent.JumpToSection("PostFight")
@@ -126,7 +156,10 @@ public static class GameScript
 					ScriptEvent.Battle(new BattleSetup 
 					{
 						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-						Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)) }
+						Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)) },
+						Ground = GroundType.Dirt,
+						Light = LightingMood.Night,
+						ElevationEnabled = true
 					}),
 					// === NEW: Converge back to the main story! ===
 					ScriptEvent.JumpToSection("PostFight")

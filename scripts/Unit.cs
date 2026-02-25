@@ -105,6 +105,7 @@ public partial class Unit : Node3D
 		IsFriendly = isFriendly;
 		_hpBar.MaxValue = Data.MaxHP;
 		_hpPreviewBar.MaxValue = Data.MaxHP;
+		
 		if (IsFriendly)
 		{
 			_xpBar.Visible = true;
@@ -121,8 +122,39 @@ public partial class Unit : Node3D
 		if (tex != null)
 		{
 			_sprite.Texture = tex;
-			_sprite.Scale = new Vector3(1.8f / (tex.GetHeight() * _sprite.PixelSize), 1.8f / (tex.GetHeight() * _sprite.PixelSize), 1.8f / (tex.GetHeight() * _sprite.PixelSize));
+			float scaleFactor = 1.8f / (tex.GetHeight() * _sprite.PixelSize);
+			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+			
+			// Wipe out any broken outlines
+			foreach (Node child in _sprite.GetChildren()) child.QueueFree();
+
+			// === 1. NATIVE SPRITE3D SETUP ===
+			_sprite.MaterialOverride = null; // Clean out the corrupted material!
+			_sprite.AlphaCut = SpriteBase3D.AlphaCutMode.Discard;
+			_sprite.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+			_sprite.Shaded = true;
+			_sprite.Billboard = BaseMaterial3D.BillboardModeEnum.FixedY;
+			
+			// === 2. THE PERFECT OUTLINE ===
+			Sprite3D outline = new Sprite3D
+			{
+				Texture = tex,
+				PixelSize = _sprite.PixelSize,
+				Modulate = new Color(0, 0, 0, 1), // Pure black
+				AlphaCut = SpriteBase3D.AlphaCutMode.Discard,
+				CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, // Prevent double shadows
+				Shaded = false,
+				
+				// CRITICAL FIX: The outline MUST NOT billboard! 
+				// It natively inherits the parent's billboard rotation. This stops the matrix explosion!
+				Billboard = BaseMaterial3D.BillboardModeEnum.FixedY,
+				Scale = new Vector3(1.08f, 1.08f, 1.08f), // Slightly thicker
+				Position = new Vector3(0, 0, -0.02f), // Push safely backwards in local space
+				RenderPriority = -1 
+			};
+			_sprite.AddChild(outline);
 		}
+		
 		UpdateVisuals();
 	}
 
@@ -132,18 +164,24 @@ public partial class Unit : Node3D
 
 		if (!_isPreviewing)
 		{
-			_hpLabel.Text = $"{Data.CurrentHP}/{Data.MaxHP}";   // ← "HP" removed
+			_hpLabel.Text = $"{Data.CurrentHP}/{Data.MaxHP}";   
 			CreateTween().TweenProperty(_hpBar, "value", (double)Data.CurrentHP, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 			_hpPreviewBar.Value = Data.CurrentHP;
 		}
 
 		if (IsFriendly) _xpLabel.Text = $"Level {Data.Level}";
 
+		// === 3. HDR COLORS (NATIVE EMISSION) ===
+		// By pushing RGB values above 1.0, Godot natively makes them emit light!
 		Color spriteColor;
-		if (IsSelected) spriteColor = new Color(1.0f, 0.95f, 0.4f, 1.0f);
-		else if (IsFriendly && HasMoved && HasAttacked) spriteColor = new Color(0.85f, 0.95f, 0.85f, 0.55f);
-		else if (IsFriendly) spriteColor = new Color(0.9f, 1.0f, 0.9f, 1.0f);
-		else spriteColor = new Color(1.0f, 0.72f, 0.72f, 1.0f);
+		if (IsSelected) 
+			spriteColor = new Color(1.6f, 1.5f, 0.7f, 1.0f); // Bright glowing yellow
+		else if (IsFriendly && HasMoved && HasAttacked) 
+			spriteColor = new Color(0.4f, 0.4f, 0.4f, 1.0f); // True dark grey for exhausted
+		else if (IsFriendly) 
+			spriteColor = new Color(1.2f, 1.2f, 1.2f, 1.0f); // 20% HDR light emission
+		else 
+			spriteColor = new Color(1.3f, 0.9f, 0.9f, 1.0f); // Emissive red tint
 
 		if (!_isPreviewing) _sprite.Modulate = spriteColor;
 	}
@@ -253,8 +291,16 @@ public partial class Unit : Node3D
 			// Board-game style plumbob hop
 			Tween hopTween = CreateTween();
 			float originalY = Position.Y;
-			hopTween.TweenProperty(this, "position:y", originalY + 0.8f, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
-			hopTween.TweenProperty(this, "position:y", originalY, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+			
+			// === THE FIX: Calculate a dynamic hop peak and land on stepPos.Y ===
+			// By taking the Max of the start and end heights, we ensure the unit 
+			// hops cleanly OVER the lip of a hill instead of clipping through it!
+			float hopPeak = Mathf.Max(originalY, stepPos.Y) + 0.8f;
+
+			hopTween.TweenProperty(this, "position:y", hopPeak, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+			
+			// Tween back down to stepPos.Y, NOT originalY!
+			hopTween.TweenProperty(this, "position:y", stepPos.Y, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
 
 			// Wait for this specific tile hop to finish before starting the next one
 			await ToSignal(moveTween, "finished");

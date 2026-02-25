@@ -1,3 +1,4 @@
+// Tile.cs
 using Godot;
 
 [Tool]
@@ -11,29 +12,37 @@ public partial class Tile : Node3D
 		Position = new Vector3(coords.X * tileSize, 0.01f, coords.Y * tileSize);
 		
 		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
-		if (mesh.MaterialOverlay != null)
-		{
-			mesh.MaterialOverlay = (Material)mesh.MaterialOverlay.Duplicate();
-		}
+		
+		// Clean up any old broken overlays from the previous attempts!
+		mesh.MaterialOverlay = null; 
 	}
 
-	// Now accepts a custom color! (Defaults to green if none is provided)
 	public void SetHighlight(bool active, Color? customColor = null)
 	{
 		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
-		if (mesh.MaterialOverlay is not StandardMaterial3D mat)
-			return;
-
-		if (active)
+		
+		// === THE FIX: Emission Glow! ===
+		// We grab the unique dirt/grass material that GameManager just assigned to this tile
+		if (mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
 		{
-			Color colorToUse = customColor ?? new Color(0, 1f, 0, 0.55f);
-			mat.AlbedoColor = colorToUse;
+			if (active)
+			{
+				Color glowColor = customColor ?? new Color(0, 1f, 0, 0.55f);
+				
+				mat.EmissionEnabled = true;
+				
+				// Strip the alpha out to use as a pure, solid light color
+				mat.Emission = new Color(glowColor.R, glowColor.G, glowColor.B);
+				
+				// JUICE: We use the alpha value of the color to determine how BRIGHT it glows!
+				// The soft blue movement tiles will emit a soft light, while the green hover will glow brightly!
+				mat.EmissionEnergyMultiplier = glowColor.A * 0.35f; 
+			}
+			else
+			{
+				// Turn off the light!
+				mat.EmissionEnabled = false;
+			}
 		}
-		else
-		{
-			mat.AlbedoColor = new Color(1f, 1f, 1f, 0f);   // ← white + zero alpha (no black tint!)
-		}
-
-		mesh.MaterialOverlay = mat; // force Godot to update
 	}
 }
