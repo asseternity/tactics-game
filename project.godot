@@ -21,11 +21,13 @@ Dialogic="*res://addons/dialogic/Core/DialogicGameHandler.gd"
 [dialogic]
 
 directories/dch_directory={
-"Commander": "res://dialogic_characters/Commander.dch"
+"Commander": "res://dialogic_characters/Commander.dch",
+"Goblin": "res://dialogic_characters/Goblin.dch"
 }
 directories/dtl_directory={
 "Intro": "res://dialogic_timelines/Intro.dtl",
-"PostFirstBattle": "res://dialogic_timelines/PostFirstBattle.dtl"
+"PostFirstBattle": "res://dialogic_timelines/PostFirstBattle.dtl",
+"TauntTurn1": "res://dialogic_timelines/TauntTurn1.dtl"
 }
 layout/style_directory={
 "": "res://dialogic_styles/Default.tres",

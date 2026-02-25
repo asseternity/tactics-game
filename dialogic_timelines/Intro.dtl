@@ -1,0 +1,8 @@
+join Commander center
+Commander: Goblins, or Ogre?
+- Goblins
+	Commander: Let's kick those green asses!
+	[signal arg="JumpTo:Path_Goblins"]
+- Ogre
+	Commander: Brave choice. Onwards!
+	[signal arg="JumpTo:Path_Ogre"]

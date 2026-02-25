@@ -36,9 +36,11 @@ public partial class GameManager : Node3D
 	private Tile _hoveredTile;
 	
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
-	private List<ScriptEvent> _mainScript = new();
 	private List<PersistentUnit> _party = new(); 
+	private System.Collections.Generic.Dictionary<string, List<ScriptEvent>> _scriptDatabase = new();
+	private string _currentSection = "Intro"; // Always start here!
 	private int _currentScriptIndex = -1;
+	private string _pendingSection = ""; // Holds the choice Dialogic sends us
 
 	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene }
 	private State _currentState = State.Cutscene; // Start in cutscene mode
@@ -50,6 +52,11 @@ public partial class GameManager : Node3D
 	private Node _dialogic;
 	private bool _dialogueActive = false;
 	private bool _levelUpActive = false; // Block inputs during Level Up
+	
+	// === MID-BATTLE EVENT TRACKING ===
+	private int _currentTurnNumber = 1;
+	private List<MidBattleEvent> _activeMidBattleEvents = new();
+	private bool _isMidBattleDialogue = false;
 
 public override void _Ready()
 	{
@@ -64,7 +71,8 @@ public override void _Ready()
 		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1, 3, 140);
 		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1, 2, 120);
 
-		_mainScript = GameScript.GetMainScript();
+		// === UPDATED SCRIPT INIT ===
+		_scriptDatabase = GameScript.GetMainScript();
 
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
@@ -73,8 +81,11 @@ public override void _Ready()
 
 		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
 		_dialogic.Connect("timeline_ended", new Callable(this, MethodName.OnTimelineEnded));
-		CallDeferred("UpdateStatsUI");
+		
+		// === NEW: Listen for Dialogic branching signals! ===
+		_dialogic.Connect("signal_event", new Callable(this, MethodName.OnDialogicSignal));
 
+		CallDeferred("UpdateStatsUI");
 		AdvanceScript();
 	}
 
@@ -227,10 +238,9 @@ public override void _Ready()
 		System.Random rnd = new System.Random();
 		SpawnRandomObstacles(rnd.Next(8, 16));
 
-		_currentState = State.PlayerTurn;
-		StatsLabel.Text = "Battle Start! Your Turn.";
-		ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
-		ShowActions(true);
+		_currentTurnNumber = 1;
+		_activeMidBattleEvents = new List<MidBattleEvent>(data.MidBattleEvents);
+		CheckMidBattleEvents();
 	}
 
 	private void SpawnUnit(PersistentUnit data, bool isFriendly, Vector3 pos)
@@ -584,10 +594,9 @@ foreach (var enemy in enemies)
 
 		foreach (var u in _units.Where(x => IsInstanceValid(x) && x.IsFriendly)) u.NewTurn();
 		
-		ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
-
-		_currentState = State.PlayerTurn;
-		if (StatsLabel != null) StatsLabel.Text = "Your Turn";
+		// === NEW: Increment turn and check for cutscenes! ===
+		_currentTurnNumber++;
+		CheckMidBattleEvents();
 	}
 	
 	public override void _UnhandledInput(InputEvent @event)
@@ -628,7 +637,17 @@ foreach (var enemy in enemies)
 	{
 		_dialogueActive = false;
 		if (DimOverlay != null) DimOverlay.Visible = false;
-		AdvanceScript(); 
+		
+		// === NEW: Route the game back to the battle if we paused for a cutscene ===
+		if (_isMidBattleDialogue)
+		{
+			_isMidBattleDialogue = false;
+			CheckMidBattleEvents(); // This will naturally trigger the "YOUR TURN" announcer!
+		}
+		else
+		{
+			AdvanceScript(); 
+		}
 	}
 	
 	private void ShowMovementRange(Unit u)
@@ -785,26 +804,42 @@ foreach (var enemy in enemies)
 	
 	private void AdvanceScript()
 	{
+		// === NEW: Did Dialogic tell us to switch paths? ===
+		if (!string.IsNullOrEmpty(_pendingSection))
+		{
+			_currentSection = _pendingSection;
+			_currentScriptIndex = -1; // Reset to the beginning of the new section
+			_pendingSection = "";     // Clear the queue
+		}
+
 		_currentScriptIndex++;
 		
-		if (_currentScriptIndex >= _mainScript.Count)
+		// End of the game or end of the path!
+		if (!_scriptDatabase.ContainsKey(_currentSection) || _currentScriptIndex >= _scriptDatabase[_currentSection].Count)
 		{
-			GD.Print("🎉 GAME OVER! You won!");
-			StatsLabel.Text = "YOU WIN!";
+			GD.Print("🎉 GAME OVER! You reached the end of this path!");
+			StatsLabel.Text = "[center][b][wave]YOU WIN![/wave][/b][/center]";
 			return;
 		}
 
-		ScriptEvent currentEvent = _mainScript[_currentScriptIndex];
+		// Fetch the current event from the active section
+		ScriptEvent currentEvent = _scriptDatabase[_currentSection][_currentScriptIndex];
 
 		if (currentEvent.Type == EventType.AddPartyMember)
 		{
-			// Add them to the persistent roster, then immediately jump to the next script event!
 			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId]));
 			AdvanceScript();
 		}
+		// === NEW: Catch the Jump Command! ===
+		else if (currentEvent.Type == EventType.JumpToSection)
+		{
+			GD.Print($"➡️ Natural script jump from {_currentSection} to {currentEvent.TargetSection}...");
+			_pendingSection = currentEvent.TargetSection;
+			AdvanceScript(); // Instantly recursively loop back to process the jump!
+		}
 		else if (currentEvent.Type == EventType.Dialogue) 
 		{
-			_currentState = State.Cutscene; // Lock the board
+			_currentState = State.Cutscene; 
 			StartDialogue(currentEvent.TimelinePath);
 		}
 		else if (currentEvent.Type == EventType.Battle) 
@@ -1172,5 +1207,37 @@ foreach (var enemy in enemies)
 		btn.ButtonUp += () => {
 			CreateTween().TweenProperty(btn, "scale", new Vector2(1.08f, 1.08f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 		};
+	}
+	
+	private void CheckMidBattleEvents()
+	{
+		// Look for an event scheduled for the current turn
+		var evt = _activeMidBattleEvents.FirstOrDefault(e => e.Turn == _currentTurnNumber);
+		
+		if (!string.IsNullOrEmpty(evt.TimelinePath))
+		{
+			// We found a cutscene! 
+			_activeMidBattleEvents.Remove(evt); // Remove it so it doesn't loop infinitely
+			_isMidBattleDialogue = true;        // Flag that we are pausing a battle
+			StartDialogue(evt.TimelinePath);
+		}
+		else
+		{
+			// No cutscene for this turn? Start the player's turn normally!
+			_currentState = State.PlayerTurn;
+			DeselectUnit(); // Safely refresh the UI
+			ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
+			ShowActions(true);
+		}
+	}
+	
+	private void OnDialogicSignal(string argument)
+	{
+		// We expect Dialogic to send strings like "JumpTo:Path_Ogre"
+		if (argument.StartsWith("JumpTo:"))
+		{
+			_pendingSection = argument.Split(":")[1];
+			GD.Print($"🔀 Branch chosen! Queuing up: {_pendingSection}");
+		}
 	}
 }

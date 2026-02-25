@@ -62,9 +62,10 @@ public class BattleSetup
 {
 	public List<Vector3> FriendlySpawns = new(); 
 	public List<UnitSpawn> Enemies = new();
+	public List<MidBattleEvent> MidBattleEvents = new();
 }
 
-public enum EventType { Dialogue, Battle, AddPartyMember } // <-- NEW: Party Add Event
+public enum EventType { Dialogue, Battle, AddPartyMember, JumpToSection } // <-- NEW: Party Add Event
 
 public class ScriptEvent
 {
@@ -72,38 +73,85 @@ public class ScriptEvent
 	public string TimelinePath;
 	public BattleSetup BattleData;
 	public string ProfileId;
+	public string TargetSection;
 
 	public static ScriptEvent Dialogue(string path) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path };
 	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
 	// Helper to write cleaner scripts:
 	public static ScriptEvent AddPartyMember(string profileId) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId };
+	// === NEW: Helper to instantly redirect the script! ===
+	public static ScriptEvent JumpToSection(string target) => new ScriptEvent { Type = EventType.JumpToSection, TargetSection = target };
 }
 
 public static class GameScript
 {
-	public static List<ScriptEvent> GetMainScript()
+	public static Dictionary<string, List<ScriptEvent>> GetMainScript()
 	{
-		return new List<ScriptEvent>
+		return new Dictionary<string, List<ScriptEvent>>
 		{
-			// Add our starting party via the script!
-			ScriptEvent.AddPartyMember("Knight"),
-			ScriptEvent.AddPartyMember("Archer"),
-
-			ScriptEvent.Dialogue("res://dialogic_timelines/Intro.dtl"),
-			
-			ScriptEvent.Battle(new BattleSetup 
 			{
-				FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-				Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) }
-			}),
-			
-			ScriptEvent.Dialogue("res://dialogic_timelines/PostFirstBattle.dtl"),
-			
-			ScriptEvent.Battle(new BattleSetup 
+				"Intro", new List<ScriptEvent>
+				{
+					ScriptEvent.AddPartyMember("Knight"),
+					ScriptEvent.AddPartyMember("Archer"),
+					ScriptEvent.Battle(new BattleSetup 
+					{
+						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
+						Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) },
+						MidBattleEvents = { new MidBattleEvent(2, "res://dialogic_timelines/TauntTurn1.dtl") }
+					}),
+					// The Dialogic choice here will fire a signal to interrupt the flow.
+					ScriptEvent.Dialogue("res://dialogic_timelines/Intro.dtl") 
+				}
+			},
 			{
-				FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-				Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)), new UnitSpawn("Goblin", new Vector3(4,0,4)) }
-			})
+				"Path_Goblins", new List<ScriptEvent>
+				{
+					ScriptEvent.Battle(new BattleSetup 
+					{
+						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
+						Enemies = { 
+							new UnitSpawn("Goblin", new Vector3(4,0,4)), 
+							new UnitSpawn("Goblin", new Vector3(6,0,4)), 
+							new UnitSpawn("Goblin", new Vector3(6,0,6)) 
+						}
+					}),
+					// === NEW: Converge back to the main story! ===
+					ScriptEvent.JumpToSection("PostFight")
+				}
+			},
+			{
+				"Path_Ogre", new List<ScriptEvent>
+				{
+					ScriptEvent.Battle(new BattleSetup 
+					{
+						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
+						Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)) }
+					}),
+					// === NEW: Converge back to the main story! ===
+					ScriptEvent.JumpToSection("PostFight")
+				}
+			},
+			{
+				"PostFight", new List<ScriptEvent>
+				{
+					ScriptEvent.Dialogue("res://dialogic_timelines/PostFirstBattle.dtl") 
+					// When this finishes, there are no more events and no JumpToSection,
+					// so the game will safely display the "YOU WIN" GAME OVER text!
+				}
+			},
 		};
+	}
+}
+
+public struct MidBattleEvent
+{
+	public int Turn;
+	public string TimelinePath;
+	
+	public MidBattleEvent(int turn, string path) 
+	{ 
+		Turn = turn; 
+		TimelinePath = path; 
 	}
 }
