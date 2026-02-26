@@ -1,8 +1,9 @@
-join Commander center
-Commander: We did a great job! What do we do next?
+join Ambrose left
+join Dougal right
+Dougal: We did a great job! What do we do next?
 - Continue the fight
-	Commander: Then let's push forward!
+	Dougal: Then let's push forward!
 - Ask for reinforcements
-	Commander: I'll call HQ right away.
+	Dougal: I'll call HQ right away.
 - Retreat
-	Commander: Understood... we pull back.
+	Dougal: Understood... we pull back.

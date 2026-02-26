@@ -12,20 +12,19 @@
 },
 &"default_portrait": "Default",
 &"description": "",
-&"display_name": "Commander",
+&"display_name": "Guard",
 &"mirror": false,
 &"nicknames": [""],
 &"offset": Vector2(0, 0),
 &"portraits": {
 "Default": {
 "export_overrides": {
-"image": "\"res://assets/archer.png\""
+"image": "\"res://assets/HighRes4.png\""
 },
-"ignore_char_scale": false,
 "mirror": false,
 "offset": Vector2(0, 0),
-"scale": 0.75,
-"scene": "res://addons/dialogic/Modules/Character/default_portrait.tscn"
+"scale": 0.6,
+"scene": ""
 }
 },
 &"scale": 1.0

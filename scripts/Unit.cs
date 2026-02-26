@@ -11,6 +11,7 @@ public partial class Unit : Node3D
 	public bool HasMoved = false;
 	public bool HasAttacked = false;
 	public bool IsSelected { get; private set; } = false;
+	public UnitFacing CurrentFacing { get; private set; }
 
 	private Sprite3D _sprite;
 	private Label3D _targetIcon;
@@ -23,6 +24,9 @@ public partial class Unit : Node3D
 	private Label _xpLabel;
 	private Tween _previewTween;
 	private bool _isPreviewing = false;
+	
+	private bool _isHovered = false;
+	private Tween _hoverTween;
 
 	public override void _Ready()
 	{
@@ -103,6 +107,16 @@ public partial class Unit : Node3D
 	{
 		Data = data;
 		IsFriendly = isFriendly;
+		
+		// Initialize the facing state!
+		CurrentFacing = data.Profile.DefaultFacing;
+		
+		if (GameManager.Instance != null && GameManager.Instance.MasterTheme != null)
+		{
+			_hpLabel.Theme = GameManager.Instance.MasterTheme;
+			_xpLabel.Theme = GameManager.Instance.MasterTheme;
+		}
+		
 		_hpBar.MaxValue = Data.MaxHP;
 		_hpPreviewBar.MaxValue = Data.MaxHP;
 		
@@ -124,6 +138,7 @@ public partial class Unit : Node3D
 			_sprite.Texture = tex;
 			float scaleFactor = 1.8f / (tex.GetHeight() * _sprite.PixelSize);
 			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+			_sprite.SetMeta("BaseScale", _sprite.Scale);
 			
 			// Wipe out any broken outlines
 			foreach (Node child in _sprite.GetChildren()) child.QueueFree();
@@ -154,6 +169,8 @@ public partial class Unit : Node3D
 			};
 			_sprite.AddChild(outline);
 		}
+		
+		_sprite.SetMeta("BasePos", _sprite.Position);
 		
 		UpdateVisuals();
 	}
@@ -233,14 +250,25 @@ public partial class Unit : Node3D
 
 		if (Data.CurrentHP <= 0)
 		{
-			if (attacker != null && !this.IsFriendly)
-				await attacker.GainXP(this.Data.XPReward);
-
-			OnDied?.Invoke(this);
-
+			// 1. Await the death shrink animation first
 			Tween deathTween = CreateTween();
 			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.25f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			deathTween.Finished += () => QueueFree();
+			await ToSignal(deathTween, Tween.SignalName.Finished);
+			
+			Visible = false; // Hide completely so they don't block the camera
+
+			if (attacker != null && !this.IsFriendly)
+			{
+				// 2. Roll for loot FIRST (pauses if an item drops)
+				await GameManager.Instance.RollForLoot();
+				
+				// 3. Give XP SECOND (pauses if they level up)
+				await attacker.GainXP(this.Data.XPReward);
+			}
+
+			// 4. Finally, announce the death to resolve the battle or remove the unit
+			OnDied?.Invoke(this);
+			QueueFree();
 		}
 	}
 
@@ -283,6 +311,9 @@ public partial class Unit : Node3D
 
 		foreach (Vector3 stepPos in path)
 		{
+			// === THE FIX: Turn to face the next tile BEFORE hopping! ===
+			await FaceDirection(stepPos);
+			
 			Tween moveTween = CreateTween();
 			// Fast horizontal movement to the next tile
 			moveTween.Parallel().TweenProperty(this, "position:x", stepPos.X, 0.18f);
@@ -304,6 +335,111 @@ public partial class Unit : Node3D
 
 			// Wait for this specific tile hop to finish before starting the next one
 			await ToSignal(moveTween, "finished");
+		}
+	}
+	
+	public void SetHovered(bool hovered, bool isTargetableEnemy = false)
+	{
+		if (_isHovered == hovered) return;
+		
+		// If we hover an enemy we can't attack, just record the hover state and exit immediately.
+		if (hovered && !IsFriendly && !isTargetableEnemy)
+		{
+			_isHovered = hovered;
+			return;
+		}
+		
+		_isHovered = hovered;
+
+		if (_hoverTween != null && _hoverTween.IsValid()) _hoverTween.Kill();
+		_hoverTween = CreateTween();
+
+		Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+		
+		// Fetch the natural standing position
+		Vector3 basePos = _sprite.HasMeta("BasePos") ? _sprite.GetMeta("BasePos").AsVector3() : _sprite.Position; 
+
+		if (hovered)
+		{
+			if (IsFriendly)
+			{
+				_hoverTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.05f, baseScale.Y * 1.15f, baseScale.Z * 1.05f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				
+				// Bounce relative to BasePos, not 0!
+				_hoverTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y + 0.15f, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			}
+			else if (isTargetableEnemy)
+			{
+				_hoverTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.25f, baseScale.Y * 0.9f, baseScale.Z * 1.25f), 0.1f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", 8f, 0.05f);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", -8f, 0.05f);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", 0f, 0.05f);
+			}
+		}
+		else
+		{
+			_hoverTween.TweenProperty(_sprite, "scale", baseScale, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			
+			// Return to BasePos, NOT 0f!
+			_hoverTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y, 0.2f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			_hoverTween.Parallel().TweenProperty(_sprite, "rotation_degrees:z", 0f, 0.1f);
+		}
+	}
+	
+	// === NEW: Game Juicy Flip Animation ===
+// === NEW: Game Juicy Flip Animation (Isometric Screen-Space Fixed) ===
+	public async Task FaceDirection(Vector3 targetGlobalPos)
+	{
+		if (Data.Profile.DefaultFacing == UnitFacing.Center) return;
+
+		// 1. Get the active camera
+		Camera3D cam = GetViewport().GetCamera3D();
+		if (cam == null) return;
+
+		// 2. Get the vector pointing from the unit to the target
+		Vector3 moveDir = targetGlobalPos - GlobalPosition;
+
+		// 3. THE MAGIC: Project that movement against the Camera's visual "Right" axis.
+		// Positive = Screen Right. Negative = Screen Left. Zero = Straight Up or Down!
+		float screenRightDiff = moveDir.Dot(cam.GlobalTransform.Basis.X);
+
+		// If the horizontal screen difference is tiny, they are moving purely straight up or down!
+		if (Mathf.Abs(screenRightDiff) < 0.1f) return; 
+
+		UnitFacing desiredFacing = screenRightDiff > 0 ? UnitFacing.Right : UnitFacing.Left;
+
+		if (CurrentFacing != desiredFacing)
+		{
+			CurrentFacing = desiredFacing;
+
+			Vector3 basePos = _sprite.HasMeta("BasePos") ? _sprite.GetMeta("BasePos").AsVector3() : _sprite.Position;
+			Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+
+			Tween flipTween = CreateTween();
+			
+			// Hop up and squash horizontally to an invisible sliver
+			flipTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y + 0.6f, 0.12f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+			flipTween.Parallel().TweenProperty(_sprite, "scale:x", 0.01f, 0.12f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+			
+			await ToSignal(flipTween, Tween.SignalName.Finished);
+
+			// While squashed to 0.01 width, flip the sprite!
+			bool isNativeFlipped = (CurrentFacing != Data.Profile.DefaultFacing);
+			_sprite.FlipH = isNativeFlipped;
+			
+			// Also flip the child outline if it exists
+			if (_sprite.GetChildCount() > 0 && _sprite.GetChild(0) is Sprite3D outline)
+			{
+				outline.FlipH = isNativeFlipped;
+			}
+
+			Tween landTween = CreateTween();
+			
+			// Slam back down and pop back to full width
+			landTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			landTween.Parallel().TweenProperty(_sprite, "scale:x", baseScale.X, 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+			await ToSignal(landTween, Tween.SignalName.Finished);
 		}
 	}
 

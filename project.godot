@@ -21,8 +21,9 @@ Dialogic="*res://addons/dialogic/Core/DialogicGameHandler.gd"
 [dialogic]
 
 directories/dch_directory={
-"Commander": "res://dialogic_characters/Commander.dch",
-"Goblin": "res://dialogic_characters/Goblin.dch"
+"Ambrose": "res://dialogic_characters/Ambrose.dch",
+"Dougal": "res://dialogic_characters/Dougal.dch",
+"Guard": "res://dialogic_characters/Guard.dch"
 }
 directories/dtl_directory={
 "Intro": "res://dialogic_timelines/Intro.dtl",

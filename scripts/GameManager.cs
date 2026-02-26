@@ -17,6 +17,7 @@ public partial class GameManager : Node3D
 	[Export] public PackedScene TileScene;
 	[Export] public Camera3D Cam;
 	private Vector3 _initialCamPos;
+	private Font _fantasyFont;
 	
 	[ExportGroup("UI References")]
 	[Export] public Control ActionMenu;
@@ -33,10 +34,12 @@ public partial class GameManager : Node3D
 	[Export] public Godot.Collections.Array<PackedScene> BackgroundDioramas;
 	private MeshInstance3D _backgroundPlane;
 	private List<Node3D> _activeDioramas = new();
+	private List<OmniLight3D> _nightLights = new();
 	
 	private Tween _uiTween;
 	private List<Tile> _movementHighlightTiles = new();
 	private Unit _previewedEnemy;
+	private Unit _hoveredUnit;
 	
 	private Godot.Collections.Dictionary<Vector2I, Tile> _grid = new();
 	private const float TileSize = 2f;
@@ -66,6 +69,17 @@ public partial class GameManager : Node3D
 	private int _currentTurnNumber = 1;
 	private List<MidBattleEvent> _activeMidBattleEvents = new();
 	private bool _isMidBattleDialogue = false;
+	
+	// === NEW: Inventory System ===
+	public List<GameItem> Inventory = new();
+	public StyleBoxFlat ItemSlotStyle { get; private set; }
+	public StyleBoxFlat ItemSlotHoverStyle { get; private set; }
+	
+	// === NEW: Item Database & State Tracking ===
+	public System.Collections.Generic.Dictionary<string, Equipment> ItemDatabase = new();
+	private bool _lootScreenActive = false;
+	private PersistentUnit _viewedPartyMember; // Tracks who we are equipping items to!
+	private VBoxContainer _rightMenuPanel;     // The container we refresh when equipping
 
 	public override void _Ready()
 	{
@@ -75,11 +89,15 @@ public partial class GameManager : Node3D
 		// === NEW: Initialize our gorgeous UI ===
 		CallDeferred(MethodName.SetupUnifiedUI);
 
-		// Add XP Rewards (the final number) to all units!
-		_unitDatabase["Knight"] = new UnitProfile("Knight", "res://assets/knight.png", 25, 15, 1, 3, 0);
-		_unitDatabase["Archer"] = new UnitProfile("Archer", "res://assets/archer.png", 18, 18, 2, 3, 0);
-		_unitDatabase["Goblin"] = new UnitProfile("Goblin", "res://assets/goblin.png", 10, 3, 1, 3, 140);
-		_unitDatabase["Ogre"]   = new UnitProfile("Ogre", "res://assets/ogre.png", 25, 8, 1, 2, 120);
+		// Append the UnitFacing enum to the end of your profiles!
+		_unitDatabase["Ambrose"] = new UnitProfile("Knight", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Dougal"] = new UnitProfile("Archer", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Guard"] = new UnitProfile("Goblin", "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right);
+		_unitDatabase["Orc"]   = new UnitProfile("Ogre", "res://assets/HR_ORC2.png", 25, 8, 1, 2, 120, UnitFacing.Center);
+		
+		// Initialize Item Archetypes
+		ItemDatabase["IronSword"] = new Equipment("IronSword", "Iron Sword", "res://icons/sword.png", EquipSlot.Weapon, bonusDmg: 1);
+		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
 
 		// === UPDATED SCRIPT INIT ===
 		_scriptDatabase = GameScript.GetMainScript();
@@ -126,14 +144,16 @@ public partial class GameManager : Node3D
 			
 			// === THE FIX: RELATIVE CAMERA LEASH ===
 			// The camera is allowed to move exactly this many units away from where it started.
-			float limitLeftRight = 5f; 
+			float limitLeft = 0f; 
+			float limitRight = 10f;
 			float limitUp = 0f;    // Keep the camera from shoving its lens into the background dioramas!
 			float limitDown = 15f; // More room needed going down so you can see the bottom of the grid
 
-			newPos.X = Mathf.Clamp(newPos.X, _initialCamPos.X - limitLeftRight, _initialCamPos.X + limitLeftRight);
+			newPos.X = Mathf.Clamp(newPos.X, _initialCamPos.X - limitLeft, _initialCamPos.X + limitRight);
 			newPos.Z = Mathf.Clamp(newPos.Z, _initialCamPos.Z - limitUp, _initialCamPos.Z + limitDown);
 
 			Cam.GlobalPosition = newPos;
+			StartAmbientCloudSystem();
 		}
 	}
 
@@ -148,6 +168,7 @@ public partial class GameManager : Node3D
 
 		Control uiRoot = new Control();
 		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (MasterTheme != null) uiRoot.Theme = MasterTheme;
 		
 		// === THE FIX: ATTACH TO CANVAS LAYER ===
 		// This puts the menu explicitly ON TOP of the DimOverlay so it is clickable!
@@ -232,12 +253,14 @@ public partial class GameManager : Node3D
 
 	private async void StartBattle(BattleSetup data)
 	{
-		ApplyEnvironment(data);
 		GD.Print("⚔️ Starting Battle!");
 		StatsLabel.Text = "Setting up the board...";
 		
-		// Clear just in case, though HandleUnitDeath usually handles this now
+		// 1. Scrub the old board FIRST so we don't delete our new lights!
 		await ClearBoardAsync(); 
+
+		// 2. NOW apply the gorgeous new environment and lighting
+		ApplyEnvironment(data);
 
 		// === NEW: Await the rising terrain! ===
 		await SetupGridElevation(data);
@@ -271,6 +294,10 @@ public partial class GameManager : Node3D
 
 		_currentTurnNumber = 1;
 		_activeMidBattleEvents = new List<MidBattleEvent>(data.MidBattleEvents);
+		
+		// === NEW: Await the glorious Battle Start banner! ===
+		await ShowTurnAnnouncer("BATTLE START", new Color(1.0f, 0.85f, 0.2f));
+		
 		CheckMidBattleEvents();
 	}
 
@@ -289,8 +316,11 @@ public partial class GameManager : Node3D
 		spawnTween.TweenProperty(u, "scale", Vector3.One, 0.35f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
 	}
 
-	private async Task PerformAttackAsync(Unit attacker, Unit target)
+private async Task PerformAttackAsync(Unit attacker, Unit target)
 	{
+		// === NEW: Spin and face the enemy before attacking! ===
+		await attacker.FaceDirection(target.GlobalPosition);
+
 		Vector3 startPos = attacker.GlobalPosition;
 		Vector3 attackDirection = (target.GlobalPosition - startPos).Normalized();
 		Vector3 lungePos = startPos + (attackDirection * 0.8f);
@@ -301,13 +331,12 @@ public partial class GameManager : Node3D
 
 		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
 
+		// ... (keep the rest of your high ground, floating text, and damage logic exactly the same!) ...
 		int damage = GD.RandRange(attacker.GetMinDamage(), attacker.GetMaxDamage());
-
-		// === NEW GAME JUICE: HIGH GROUND ADVANTAGE! ===
-		if (attacker.GlobalPosition.Y > target.GlobalPosition.Y + 0.15f) // 0.15f threshold prevents flat tiles from triggering it
+		
+		if (attacker.GlobalPosition.Y > target.GlobalPosition.Y + 0.15f) 
 		{
 			damage += 1;
-			// Spawn a special golden "High Ground!" text just above the damage numbers!
 			SpawnFloatingText(target.GlobalPosition + new Vector3(0, 0.6f, 0), "HIGH GROUND!", new Color(1f, 0.85f, 0.2f), 22);
 		}
 
@@ -329,6 +358,7 @@ public partial class GameManager : Node3D
 	
 	private async void HandleUnitDeath(Unit deadUnit)
 	{
+		Input.SetCustomMouseCursor(null);
 		_units.Remove(deadUnit); 
 
 		bool enemiesAlive = _units.Any(u => IsInstanceValid(u) && !u.IsFriendly);
@@ -360,6 +390,12 @@ public partial class GameManager : Node3D
 				Tile tile = TileScene.Instantiate<Tile>();
 				AddChild(tile);
 				tile.Setup(new Vector2I(x, z), TileSize);
+				
+				// === NEW: The Diorama Gap ===
+				// Shrink the tiles slightly so they don't touch. 
+				// Godot's SSAO will cast beautiful, soft dark shadows down into these cracks!
+				tile.Scale = new Vector3(0.96f, 1.0f, 0.96f); 
+				
 				_grid[new Vector2I(x, z)] = tile;
 			}
 		}
@@ -481,6 +517,10 @@ public partial class GameManager : Node3D
 		UpdateStatsUI();
 		RefreshTargetIcons();
 		ClearMovementRange();
+		
+		// THE FIX: Aggressively nuke the preview and the custom cursor!
+		ClearAttackPreview();
+		Input.SetCustomMouseCursor(null);
 	}
 
 	private void ShowUnitInfo(Unit u)
@@ -545,12 +585,12 @@ public partial class GameManager : Node3D
 		RefreshTargetIcons();
 		if (StatsLabel != null) StatsLabel.Text = "Enemy Turn...";
 
-		ShowTurnAnnouncer("ENEMY TURN", new Color(1.0f, 0.2f, 0.2f));
+		_ = ShowTurnAnnouncer("ENEMY TURN", new Color(1.0f, 0.2f, 0.2f));
 		await ToSignal(GetTree().CreateTimer(1.5f), "timeout");
 
 		var enemies = _units.Where(x => IsInstanceValid(x) && !x.IsFriendly).ToList();
 
-foreach (var enemy in enemies)
+		foreach (var enemy in enemies)
 		{
 			if (!IsInstanceValid(enemy)) continue;
 
@@ -762,38 +802,53 @@ foreach (var enemy in enemies)
 
 		Node collider = (Node)result["collider"];
 		Tile targetTile = null;
-		Unit hoveredUnit = null;
+		Unit newlyHoveredUnit = null;
 
 		if (collider.GetParent() is Unit u) 
 		{
-			hoveredUnit = u;
+			newlyHoveredUnit = u;
 			Vector2I gridPos = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
 			if (_grid.TryGetValue(gridPos, out Tile underlyingTile)) targetTile = underlyingTile;
 		}
 		else if (collider.GetParent() is Tile tile) targetTile = tile;
 
-		if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
+		// === NEW: Trigger the Unit Hover Animations! ===
+		if (newlyHoveredUnit != _hoveredUnit)
 		{
-			if (hoveredUnit != null && !hoveredUnit.IsFriendly)
+			// Tell the old unit to stop animating
+			if (_hoveredUnit != null && IsInstanceValid(_hoveredUnit)) 
 			{
-				if (GetGridDistance(_selectedUnit.GlobalPosition, hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange)
+				_hoveredUnit.SetHovered(false);
+			}
+			
+			// FIX 1: Clear the preview safely ONLY when the hovered unit changes!
+			ClearAttackPreview();
+			
+			_hoveredUnit = newlyHoveredUnit;
+			
+			// Tell the new unit to start animating!
+			if (_hoveredUnit != null)
+			{
+				bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null && !_selectedUnit.HasAttacked && 
+									(_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn) && 
+									GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+				
+				_hoveredUnit.SetHovered(true, isTargetable);
+
+				// FIX 2: Assign the previewed enemy and trigger the blinking juice!
+				if (isTargetable)
 				{
-					Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					_previewedEnemy = _hoveredUnit;
+					_previewedEnemy.PreviewDamage(_selectedUnit.GetMinDamage());
 					
-					if (_previewedEnemy != hoveredUnit)
+					// Show the crosshair cursor for "Smart Attacks" without clicking the Attack button
+					if (_currentState == State.PlayerTurn && AttackCursorIcon != null)
 					{
-						ClearAttackPreview(); 
-						_previewedEnemy = hoveredUnit;
-						hoveredUnit.PreviewDamage(_selectedUnit.GetMinDamage());
+						Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
 					}
-					
-					ClearHover(); 
-					return;
 				}
 			}
 		}
-
-		ClearAttackPreview();
 
 		if (targetTile != _hoveredTile)
 		{
@@ -830,6 +885,7 @@ foreach (var enemy in enemies)
 	private void SpawnFloatingText(Vector3 targetPosition, string text, Color color, float size = 30)
 	{
 		Label3D label = new Label3D { Text = text, PixelSize = 0.02f, FontSize = (int)size, Modulate = color, OutlineModulate = new Color(0, 0, 0), OutlineSize = 6, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true };
+		if (_fantasyFont != null) label.Font = _fantasyFont;
 		AddChild(label);
 		label.GlobalPosition = targetPosition + new Vector3(0, 1.5f, 0);
 
@@ -929,6 +985,18 @@ foreach (var enemy in enemies)
 		}
 		_activeDioramas.Clear();
 		
+		// === NEW: Fade out and destroy the night stage lights ===
+		foreach (var light in _nightLights)
+		{
+			if (IsInstanceValid(light))
+			{
+				Tween dimTween = CreateTween();
+				dimTween.TweenProperty(light, "light_energy", 0.0f, 0.35f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+				dimTween.Finished += () => light.QueueFree();
+			}
+		}
+		_nightLights.Clear();
+		
 		// Flatten the Terrain Juicily!
 		Tween flattenTween = CreateTween();
 		flattenTween.SetParallel(true);
@@ -939,19 +1007,29 @@ foreach (var enemy in enemies)
 			if (tile.Position.Y > 0.02f) // Only tween tiles that are actually raised
 			{
 				hasElevatedTiles = true;
-				// Add a tiny random delay to each tile for a cascading ripple effect
 				float delay = (float)GD.RandRange(0.0f, 0.15f);
 				flattenTween.TweenProperty(tile, "position:y", 0.01f, 0.4f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay(delay);
+				
+				// === NEW: Drain the sun-catch tint as it sinks! ===
+				if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh)
+				{
+					if (mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
+					{
+						// Darken the color back down smoothly
+						Color darkColor = new Color(mat.AlbedoColor.R * 0.75f, mat.AlbedoColor.G * 0.75f, mat.AlbedoColor.B * 0.85f, mat.AlbedoColor.A);
+						flattenTween.TweenProperty(mat, "albedo_color", darkColor, 0.4f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In).SetDelay(delay);
+					}
+				}
 			}
 		}
 
 		if (hasElevatedTiles)
 		{
-			await ToSignal(GetTree().CreateTimer(0.6f), "timeout"); // Wait for the longest tween + delay
+			await ToSignal(GetTree().CreateTimer(0.6f), "timeout"); 
 		}
 		else
 		{
-			flattenTween.Kill(); // <--- THE FIX: Destroy the empty tween so Godot doesn't complain!
+			flattenTween.Kill(); 
 			await ToSignal(GetTree().CreateTimer(0.25f), "timeout");
 		}
 	}
@@ -968,13 +1046,18 @@ foreach (var enemy in enemies)
 		}
 	}
 	
-	private void ShowTurnAnnouncer(string text, Color color)
+	// FIX: Changed void to async Task
+	private async Task ShowTurnAnnouncer(string text, Color color)
 	{
 		Label announcer = new Label { Text = text, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 		announcer.AddThemeFontSizeOverride("font_size", 100);
 		announcer.AddThemeColorOverride("font_color", color);
 		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0));
 		announcer.AddThemeConstantOverride("outline_size", 20);
+		
+		// FIX: Apply the theme font directly to this dynamically spawned label!
+		if (_fantasyFont != null) announcer.AddThemeFontOverride("font", _fantasyFont);
+		
 		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer);
@@ -991,6 +1074,9 @@ foreach (var enemy in enemies)
 		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.5f, 1.5f), 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
 		tween.Parallel().TweenProperty(announcer, "modulate:a", 0.0f, 0.3f);
 		tween.Finished += () => announcer.QueueFree();
+
+		// FIX: Hold the execution of the code until this tween finishes!
+		await ToSignal(tween, Tween.SignalName.Finished);
 	}
 	
 	private int GetGridDistance(Vector3 posA, Vector3 posB)
@@ -1189,6 +1275,7 @@ foreach (var enemy in enemies)
 			ContentMarginLeft = 24, ContentMarginRight = 24, ContentMarginTop = 16, ContentMarginBottom = 16,
 			ShadowColor = new Color(0, 0, 0, 0.7f), ShadowSize = 8, ShadowOffset = new Vector2(0, 6)
 		};
+		BaseUIStyle = baseStyle;
 
 		// === NEW: A sleek, contrasting badge for the NPC Nameplate! ===
 		BadgeStyle = new StyleBoxFlat {
@@ -1213,6 +1300,18 @@ foreach (var enemy in enemies)
 		btnPressed.ShadowSize = 2; btnPressed.ShadowOffset = new Vector2(0, 2);
 
 		MasterTheme = new Theme();
+		
+		// === NEW: Global Fantasy Font Setup ===
+		_fantasyFont = GD.Load<Font>("res://fonts/yoster.ttf"); 
+		if (_fantasyFont != null)
+		{
+			MasterTheme.DefaultFont = _fantasyFont;
+			
+			// FIX: Force RichTextLabels to use the font for normal AND bold text!
+			MasterTheme.SetFont("normal_font", "RichTextLabel", _fantasyFont);
+			MasterTheme.SetFont("bold_font", "RichTextLabel", _fantasyFont);
+		}
+		
 		MasterTheme.SetStylebox("panel", "PanelContainer", baseStyle);
 		MasterTheme.SetStylebox("normal", "Button", btnNormal);
 		MasterTheme.SetStylebox("hover", "Button", btnHover);
@@ -1224,6 +1323,9 @@ foreach (var enemy in enemies)
 		MasterTheme.SetColor("default_color", "RichTextLabel", new Color(0.95f, 0.95f, 0.95f, 1f));
 		MasterTheme.SetFontSize("font_size", "Label", 22);
 		MasterTheme.SetColor("font_color", "Label", new Color(0.95f, 0.95f, 0.95f, 1f));
+		
+		if (ActionMenu != null) ActionMenu.Theme = MasterTheme;
+		if (StatsLabel != null) StatsLabel.Theme = MasterTheme;
 
 		if (StatsLabel != null)
 		{
@@ -1252,6 +1354,18 @@ foreach (var enemy in enemies)
 			btn.AddThemeFontSizeOverride("font_size", 24); 
 			AddButtonJuice(btn);
 		}
+		
+		// === NEW: Unified Item Slot Styling ===
+		ItemSlotStyle = new StyleBoxFlat {
+			BgColor = new Color(0.12f, 0.12f, 0.15f, 0.95f),
+			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
+			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+			BorderColor = new Color(0.25f, 0.25f, 0.3f, 1f),
+		};
+
+		ItemSlotHoverStyle = (StyleBoxFlat)ItemSlotStyle.Duplicate();
+		ItemSlotHoverStyle.BgColor = new Color(0.2f, 0.2f, 0.25f, 1f);
+		ItemSlotHoverStyle.BorderColor = new Color(1f, 0.85f, 0.3f, 1f);
 	}
 
 	private void UpdateStatsUI()
@@ -1314,7 +1428,7 @@ foreach (var enemy in enemies)
 			// No cutscene for this turn? Start the player's turn normally!
 			_currentState = State.PlayerTurn;
 			DeselectUnit(); // Safely refresh the UI
-			ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
+			_ = ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
 			ShowActions(true);
 		}
 	}
@@ -1331,12 +1445,10 @@ foreach (var enemy in enemies)
 	
 	private Control _activePartyMenu;
 
-	// === UPGRADED SEAMLESS PARTY MENU ===
-	private void TogglePartyMenu()
+private void TogglePartyMenu()
 	{
 		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu) return;
 
-		// --- CLOSE MENU ANIMATION ---
 		if (_activePartyMenu != null)
 		{
 			Tween outTween = CreateTween();
@@ -1351,7 +1463,6 @@ foreach (var enemy in enemies)
 			return;
 		}
 
-		// --- OPEN MENU ---
 		_currentState = State.PartyMenu;
 		ShowActions(false);
 		if (DimOverlay != null) DimOverlay.Visible = true;
@@ -1361,14 +1472,16 @@ foreach (var enemy in enemies)
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activePartyMenu);
 		else AddChild(_activePartyMenu);
 
-		// ONLY ONE PANEL. The entire menu shares this single, gorgeous dark rounded background.
-		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 550), Theme = MasterTheme };
-		_activePartyMenu.AddChild(mainPanel);
+		VBoxContainer menuWrapper = new VBoxContainer();
+		menuWrapper.AddThemeConstantOverride("separation", 20); 
+		_activePartyMenu.AddChild(menuWrapper);
+
+		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 480), Theme = MasterTheme };
+		menuWrapper.AddChild(mainPanel);
 
 		HBoxContainer mainHBox = new HBoxContainer();
 		mainPanel.AddChild(mainHBox);
 
-		// === LEFT SIDE: ROSTER & CLOSE BUTTON ===
 		VBoxContainer leftCol = new VBoxContainer { CustomMinimumSize = new Vector2(280, 0) };
 		mainHBox.AddChild(leftCol);
 
@@ -1377,20 +1490,13 @@ foreach (var enemy in enemies)
 		leftCol.AddChild(rosterTitle);
 		leftCol.AddChild(new HSeparator());
 
-		// FIX 2: ScrollContainer must expand vertically to allow scrolling!
 		ScrollContainer rosterScroll = new ScrollContainer { 
 			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
 			VerticalScrollMode = ScrollContainer.ScrollMode.Auto,
-			SizeFlagsVertical = Control.SizeFlags.ExpandFill // <--- This allows it to scroll!
+			SizeFlagsVertical = Control.SizeFlags.ExpandFill 
 		};
-		// Stylish dark scrollbar
-		StyleBoxFlat scrollStyle = new StyleBoxFlat { BgColor = new Color(0.3f, 0.3f, 0.35f), CornerRadiusTopLeft=4, CornerRadiusTopRight=4, CornerRadiusBottomLeft=4, CornerRadiusBottomRight=4 };
-		rosterScroll.GetVScrollBar().AddThemeStyleboxOverride("grabber", scrollStyle);
-		rosterScroll.GetVScrollBar().AddThemeStyleboxOverride("grabber_hover", scrollStyle);
-		rosterScroll.GetVScrollBar().AddThemeStyleboxOverride("grabber_pressed", scrollStyle);
 		leftCol.AddChild(rosterScroll);
 
-		// === THE FIX: MarginContainer to give the hover animations breathing room! ===
 		MarginContainer rosterMargin = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
 		rosterMargin.AddThemeConstantOverride("margin_left", 16);
 		rosterMargin.AddThemeConstantOverride("margin_right", 16);
@@ -1399,123 +1505,41 @@ foreach (var enemy in enemies)
 		rosterScroll.AddChild(rosterMargin);
 
 		VBoxContainer rosterBox = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-		rosterBox.AddThemeConstantOverride("separation", 8); // Adds a nice little gap between the buttons, too!
+		rosterBox.AddThemeConstantOverride("separation", 8); 
 		rosterMargin.AddChild(rosterBox);
 
-		// === MIDDLE: SEAMLESS DIVIDER ===
 		VSeparator splitLine = new VSeparator();
 		splitLine.AddThemeConstantOverride("separation", 30);
 		mainHBox.AddChild(splitLine);
 
-		// === RIGHT SIDE: DETAILS CONTAINER (No Background!) ===
-		// FIX 1: This is just a layout wrapper now. No ugly nested boxes.
-		MarginContainer detailsContainer = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-		detailsContainer.AddThemeConstantOverride("margin_right", 20);
-		mainHBox.AddChild(detailsContainer);
+		// === THE FIX: Use _rightMenuPanel instead of detailsContainer ===
+		_rightMenuPanel = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+		mainHBox.AddChild(_rightMenuPanel);
 
-		// Populate Roster Buttons
 		foreach (PersistentUnit unit in _party)
 		{
 			Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) };
 			AddButtonJuice(btn);
-			btn.Pressed += () => ShowPartyMemberDetails(unit, detailsContainer);
+			// === THE FIX: Call the new unified refresh method! ===
+			btn.Pressed += () => RefreshPartyDetailsAndInventory(unit);
 			rosterBox.AddChild(btn);
 		}
 
-		// FIX 3: Dedicated Close Button at the bottom of the roster!
 		leftCol.AddChild(new HSeparator());
 		Button closeBtn = new Button { Text = "Close Menu", CustomMinimumSize = new Vector2(0, 50) };
-		closeBtn.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f)); // Make it slightly red so it pops
+		closeBtn.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f)); 
 		AddButtonJuice(closeBtn);
-		closeBtn.Pressed += TogglePartyMenu; // Clicking this fires the close animation!
+		closeBtn.Pressed += TogglePartyMenu; 
 		leftCol.AddChild(closeBtn);
 
-		// Juice: Pop in animation
-		mainPanel.PivotOffset = new Vector2(475, 275);
-		mainPanel.Scale = Vector2.Zero;
-		CreateTween().TweenProperty(mainPanel, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		menuWrapper.PivotOffset = new Vector2(475, 350);
+		menuWrapper.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(menuWrapper, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 
-		if (_party.Count > 0) ShowPartyMemberDetails(_party[0], detailsContainer);
+		// === THE FIX: Call the new unified refresh method! ===
+		if (_party.Count > 0) RefreshPartyDetailsAndInventory(_party[0]);
 	}
 
-	// === UPGRADED DETAILS SCREEN ===
-	private void ShowPartyMemberDetails(PersistentUnit unit, MarginContainer detailsContainer)
-	{
-		foreach (Node child in detailsContainer.GetChildren()) child.QueueFree();
-
-		HBoxContainer layout = new HBoxContainer();
-		layout.AddThemeConstantOverride("separation", 40);
-		detailsContainer.AddChild(layout);
-
-		// Big, bold portrait on the left of the details pane
-		TextureRect portrait = new TextureRect {
-			Texture = GD.Load<Texture2D>(unit.Profile.SpritePath),
-			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-			StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
-			CustomMinimumSize = new Vector2(240, 350), 
-			SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
-		};
-		layout.AddChild(portrait);
-
-		// Left-aligned stats block for a cleaner, professional look
-		VBoxContainer statsBox = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center };
-		statsBox.AddThemeConstantOverride("separation", 15);
-		layout.AddChild(statsBox);
-
-		RichTextLabel nameLabel = new RichTextLabel {
-			BbcodeEnabled = true, FitContent = true, ScrollActive = false,
-			Text = $"[left][font_size=32][b][wave amp=20 freq=2]{unit.Profile.Name}[/wave][/b][/font_size]\n[color=gold]Level {unit.Level}[/color][/left]"
-		};
-		statsBox.AddChild(nameLabel);
-
-		string typeText = unit.IsPlayerCharacter ? "[color=#44ff44]Player Character (You)[/color]" : "[color=#44ccff]Companion[/color]";
-		RichTextLabel combatStats = new RichTextLabel {
-			BbcodeEnabled = true, FitContent = true, ScrollActive = false,
-			Text = $"[left]{typeText}\n\n[color=#aaaaaa]Max HP:[/color] {unit.MaxHP}\n[color=#aaaaaa]Damage:[/color] {unit.AttackDamage}\n[color=#aaaaaa]Movement:[/color] {unit.Movement}[/left]"
-		};
-		statsBox.AddChild(combatStats);
-
-		// CoG Relationship Bars
-		if (!unit.IsPlayerCharacter)
-		{
-			statsBox.AddChild(new HSeparator());
-			Label relTitle = new Label { Text = "Dynamics with You" };
-			relTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
-			statsBox.AddChild(relTitle);
-
-			foreach (var rel in unit.Relationships)
-			{
-				VBoxContainer barBox = new VBoxContainer();
-				Color barColor = rel.Key == "Fear" ? new Color(0.8f, 0.3f, 0.3f) : new Color(0.3f, 0.8f, 0.5f);
-				
-				ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(0, 22), ShowPercentage = false, MaxValue = 100 };
-				StyleBoxFlat bgStyle = new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 };
-				StyleBoxFlat fillStyle = new StyleBoxFlat { BgColor = barColor, CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 };
-				bar.AddThemeStyleboxOverride("bg", bgStyle);
-				bar.AddThemeStyleboxOverride("fill", fillStyle);
-
-				Label barLabel = new Label { Text = $"  {rel.Key}: {rel.Value}%", VerticalAlignment = VerticalAlignment.Center };
-				barLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-				barLabel.AddThemeFontSizeOverride("font_size", 14);
-				barLabel.AddThemeColorOverride("font_color", Color.Color8(255,255,255,220));
-				bar.AddChild(barLabel);
-
-				barBox.AddChild(bar);
-				statsBox.AddChild(barBox);
-
-				bar.Value = 0;
-				CreateTween().TweenProperty(bar, "value", (double)rel.Value, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
-			}
-		}
-
-		// === THE FIX: Layout-Safe Juice ===
-		// We fade the inner layout box in, completely respecting the HBoxContainer's borders!
-		layout.Modulate = new Color(1, 1, 1, 0);
-		
-		Tween fadeTween = CreateTween();
-		fadeTween.TweenProperty(layout, "modulate:a", 1.0f, 0.25f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);;
-	}
-	
 	private void ApplyEnvironment(BattleSetup data)
 	{
 		// 1. === THE GODOT 4 JUICE PIPELINE ===
@@ -1605,7 +1629,8 @@ foreach (var enemy in enemies)
 					
 					env.FogLightColor = env.BackgroundColor; 
 					// Lightened the fog slightly so it feels like glowing mist
-					env.VolumetricFogAlbedo = new Color(0.15f, 0.15f, 0.25f); 
+					env.VolumetricFogAlbedo = new Color(0.15f, 0.15f, 0.25f);
+					SpawnNightCornerLights(); 
 					break;
 					
 				case LightingMood.Indoors:
@@ -1679,7 +1704,7 @@ foreach (var enemy in enemies)
 	{
 		FastNoiseLite noise = new FastNoiseLite { 
 			NoiseType = FastNoiseLite.NoiseTypeEnum.Simplex, 
-			Seed = (int)GD.Randi(), // Naturally fulfills your request for random terrain per battle!
+			Seed = (int)GD.Randi(), 
 			Frequency = 0.15f 
 		};
 
@@ -1709,23 +1734,43 @@ foreach (var enemy in enemies)
 				}
 			}
 
-			// === NEW: Animate the rise instead of snapping instantly! ===
 			if (Mathf.Abs(tile.Position.Y - targetHeight) > 0.001f)
 			{
 				rising = true;
 				float delay = (float)GD.RandRange(0.0f, 0.2f);
+				
+				// 1. The Physical Rise
 				riseTween.TweenProperty(tile, "position:y", targetHeight, 0.5f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay(delay);
+				
+				// 2. === NEW: Elevation Sun-Catching Tint ===
+				if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh)
+				{
+					if (mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
+					{
+						// Calculate how high this tile is relative to the max possible height (~0.71f)
+						float heightRatio = Mathf.Clamp(targetHeight / 0.75f, 0f, 1f);
+						
+						Color baseColor = mat.AlbedoColor;
+						// Create a warmer, brighter version of the dirt/grass color
+						Color highlightColor = new Color(baseColor.R * 1.35f, baseColor.G * 1.35f, baseColor.B * 1.15f, baseColor.A);
+						
+						// Blend the colors based on how high the tile goes
+						Color finalColor = baseColor.Lerp(highlightColor, heightRatio);
+						
+						// Tween the color change so it visually "catches the sun" as it rises!
+						riseTween.TweenProperty(mat, "albedo_color", finalColor, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out).SetDelay(delay);
+					}
+				}
 			}
 		}
 
 		if (rising)
 		{
-			// Wait for the terrain to finish shifting so units don't spawn incorrectly
 			await ToSignal(GetTree().CreateTimer(0.7f), "timeout");
 		}
 		else
 		{
-			riseTween.Kill(); // <--- THE FIX: Destroy the empty tween!
+			riseTween.Kill(); 
 		}
 	}
 	
@@ -1734,92 +1779,497 @@ foreach (var enemy in enemies)
 		if (BackgroundDioramas == null || BackgroundDioramas.Count == 0) return;
 
 		float gridSize = GridWidth * TileSize; // 10 * 2 = 20 world units
-		float gap = 4.0f; // The space between the edge of the grid and the slot
-		float offset = gridSize + gap; // Distance from the center of the grid to the center of the slot
-
-		// The true mathematical center of the grid
 		Vector3 center = new Vector3((GridWidth - 1) * TileSize / 2f, 0, (GridDepth - 1) * TileSize / 2f);
 
-		// The 4 compass directions around the main grid
-		Vector3[] slotPositions = {
-			center + new Vector3(0, 0, -offset), // North
-			center + new Vector3(0, 0, offset),  // South
-			center + new Vector3(offset, 0, 0),  // East
-			center + new Vector3(-offset, 0, 0)  // West
-		};
-
-		// === THE FIX: The "Theater Stage" Effect ===
-		// Find out where the camera is looking from (ignoring height)
+		// Find out where the camera is looking from
 		Vector3 camDir = (Cam.GlobalPosition - center);
 		camDir.Y = 0; 
 		camDir = camDir.Normalized();
 
-		List<Vector3> validSlots = new List<Vector3>();
-		foreach (Vector3 pos in slotPositions)
-		{
-			Vector3 slotDir = (pos - center).Normalized();
-			
-			// Dot product tells us if the slot is pointing toward the camera.
-			// If it's < 0.2f, the slot is safely to the side or behind the board!
-			if (slotDir.Dot(camDir) < 0.2f) 
-			{
-				validSlots.Add(pos);
-			}
-		}
+		// The 4 compass directions around the main grid
+		Vector3[] compassDirs = {
+			new Vector3(0, 0, -1), // North
+			new Vector3(0, 0, 1),  // South
+			new Vector3(1, 0, 0),  // East
+			new Vector3(-1, 0, 0)  // West
+		};
 
 		System.Random rnd = new System.Random();
+		List<Vector3> bgDirs = new List<Vector3>();
+		List<(Vector3 pos, bool isBg)> slotsToSpawn = new();
 
-		foreach (Vector3 pos in validSlots)
+		// 1. === CALCULATE THE FOUR SIDES ===
+		foreach (Vector3 dir in compassDirs)
 		{
-			// Grab a random 3D model from the Inspector array
-			PackedScene randomScene = BackgroundDioramas[rnd.Next(BackgroundDioramas.Count)];
-			Node3D diorama = randomScene.Instantiate<Node3D>();
-			AddChild(diorama);
+			bool isBg = dir.Dot(camDir) < -0.1f;
 			
-			// === DYNAMIC AUTO-SCALING ===
-			// Look through all meshes inside the 3D object to find its true boundaries
-			Aabb bounds = new Aabb();
-			bool first = true;
+			// Top dioramas get pulled much closer (0.5f gap) compared to foreground (4.0f gap)
+			float gap = isBg ? 0.5f : 4.0f;
+			float offset = gridSize + gap; 
 			
-			// Godot 4 C# requires 'true, false' for recursive and owned search flags
-			foreach (Node child in diorama.FindChildren("*", "MeshInstance3D", true, false))
+			slotsToSpawn.Add((center + (dir * offset), isBg));
+			if (isBg) bgDirs.Add(dir);
+		}
+
+		// 2. === CALCULATE THE 5TH DIORAMA (TOP CORNER) ===
+		// If we found exactly 2 background edges (which an isometric camera always will):
+		if (bgDirs.Count == 2)
+		{
+			float bgOffset = gridSize + 0.5f;
+			// By adding the two directions together, we get the exact diagonal corner!
+			Vector3 cornerPos = center + (bgDirs[0] * bgOffset) + (bgDirs[1] * bgOffset);
+			slotsToSpawn.Add((cornerPos, true)); 
+		}
+
+		// 3. === SPAWN EVERYTHING ===
+		foreach (var slot in slotsToSpawn)
+		{
+			// Create a parent node so we can tween the whole block at once
+			Node3D dioramaParent = new Node3D { Position = new Vector3(slot.pos.X, 0, slot.pos.Z) };
+			AddChild(dioramaParent);
+			_activeDioramas.Add(dioramaParent);
+
+			if (slot.isBg)
 			{
-				if (child is MeshInstance3D meshInstance)
+				// === TOP DIORAMAS: DIVIDE INTO 4 QUADRANTS ===
+				float subSquareSize = (gridSize / 2f) - 0.5f; // Leaves a tiny gap between the 4 objects
+				float subRadius = gridSize / 4f; // 5.0f offset from the center of the block
+
+				Vector3[] subOffsets = {
+					new Vector3(-subRadius, 0, -subRadius),
+					new Vector3(subRadius, 0, -subRadius),
+					new Vector3(-subRadius, 0, subRadius),
+					new Vector3(subRadius, 0, subRadius)
+				};
+
+				foreach (Vector3 subOff in subOffsets)
 				{
-					// Godot 4 lets us multiply a Transform3D by an Aabb directly!
-					Aabb transformedAabb = meshInstance.Transform * meshInstance.GetAabb();
-					
-					if (first) 
-					{ 
-						bounds = transformedAabb; 
-						first = false; 
-					}
-					else 
-					{
-						bounds = bounds.Merge(transformedAabb);
-					}
+					// Spawn, scale, and rotate randomly!
+					Node3D model = InstantiateAndScaleRandomModel(rnd, subSquareSize, out _);
+					model.Position = subOff;
+					model.RotationDegrees = new Vector3(0, rnd.Next(0, 4) * 90, 0);
+					dioramaParent.AddChild(model);
 				}
 			}
+			else
+			{
+				// === FOREGROUND DIORAMAS: ONE HUGE SUNKEN OBJECT ===
+				Node3D model = InstantiateAndScaleRandomModel(rnd, gridSize, out float scaledHeight);
+				dioramaParent.AddChild(model);
 
-			// Find the longest base dimension (Width or Depth)
-			float maxBaseDimension = Mathf.Max(bounds.Size.X, bounds.Size.Z);
-			if (maxBaseDimension == 0) maxBaseDimension = 1f; // Prevent dividing by zero just in case
+				// Sink it safely into the ground to frame the camera
+				dioramaParent.Position = new Vector3(slot.pos.X, -(scaledHeight * 0.88f), slot.pos.Z);
+			}
 
-			// Scale it so the longest dimension perfectly matches the GridSize
-			float targetScaleFactor = gridSize / maxBaseDimension;
-			Vector3 targetScale = new Vector3(targetScaleFactor, targetScaleFactor, targetScaleFactor);
-
-			// Position it and prepare for the juice
-			diorama.Position = pos;
-			diorama.Scale = Vector3.Zero;
-			_activeDioramas.Add(diorama);
-
-			// Juiciness: Pop them in with a slight random delay for a cascading build-up
+			// === POP-IN JUICE ===
+			dioramaParent.Scale = Vector3.Zero;
 			float delay = (float)GD.RandRange(0.0f, 0.4f);
-			CreateTween().TweenProperty(diorama, "scale", targetScale, 0.7f)
+			CreateTween().TweenProperty(dioramaParent, "scale", Vector3.One, 0.7f)
 				.SetTrans(Tween.TransitionType.Back)
 				.SetEase(Tween.EaseType.Out)
 				.SetDelay(delay);
 		}
+	}
+
+	// Helper method to automatically calculate bounds, scale the object, and return its final height
+	private Node3D InstantiateAndScaleRandomModel(System.Random rnd, float targetSquareSize, out float finalScaledHeight)
+	{
+		PackedScene randomScene = BackgroundDioramas[rnd.Next(BackgroundDioramas.Count)];
+		Node3D model = randomScene.Instantiate<Node3D>();
+		
+		Aabb bounds = new Aabb();
+		bool first = true;
+		
+		foreach (Node child in model.FindChildren("*", "MeshInstance3D", true, false))
+		{
+			if (child is MeshInstance3D meshInstance)
+			{
+				Aabb transformedAabb = meshInstance.Transform * meshInstance.GetAabb();
+				if (first) { bounds = transformedAabb; first = false; }
+				else bounds = bounds.Merge(transformedAabb);
+			}
+		}
+
+		// Find the longest base dimension so we can normalize it to fit perfectly inside the square
+		float maxBaseDimension = Mathf.Max(bounds.Size.X, bounds.Size.Z);
+		if (maxBaseDimension == 0) maxBaseDimension = 1f; 
+
+		float targetScaleFactor = targetSquareSize / maxBaseDimension;
+		model.Scale = new Vector3(targetScaleFactor, targetScaleFactor, targetScaleFactor);
+
+		// Pass out the true Godot-world height of the model for our sinking math!
+		finalScaledHeight = bounds.Size.Y * targetScaleFactor;
+		return model;
+	}
+	
+	private void SpawnNightCornerLights()
+	{
+		float height = 8.0f; // High enough to cast soft downward light
+		float maxX = (GridWidth - 1) * TileSize;
+		float maxZ = (GridDepth - 1) * TileSize;
+
+		// The 4 absolute corners of your board
+		Vector3[] corners = {
+			new Vector3(0, height, 0),
+			new Vector3(maxX, height, 0),
+			new Vector3(0, height, maxZ),
+			new Vector3(maxX, height, maxZ)
+		};
+
+		foreach (var pos in corners)
+		{
+			OmniLight3D light = new OmniLight3D
+			{
+				LightColor = new Color(0.6f, 0.7f, 1.0f), // Brighter, icier blue
+				OmniRange = 45.0f,                        // MASSIVE increase from 18.0f! 
+				OmniAttenuation = 0.8f,                   // Much softer falloff so the light travels further
+				ShadowEnabled = false,                    
+				Position = pos
+			};
+
+			AddChild(light);
+			_nightLights.Add(light);
+
+			// Juice: Fade the lights in smoothly so they don't pop instantly!
+			light.LightEnergy = 0f;
+			CreateTween().TweenProperty(light, "light_energy", 1.2f, 1.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+	}
+
+	private async void StartAmbientCloudSystem()
+	{
+		// Infinite loop that runs alongside your game
+		while (IsInsideTree())
+		{
+			SpawnProceduralCloud();
+			
+			// Wait a random amount of time (3 to 8 seconds) before spawning the next cloud
+			float nextSpawnTime = (float)GD.RandRange(3.0f, 8.0f);
+			await ToSignal(GetTree().CreateTimer(nextSpawnTime), "timeout");
+		}
+	}
+
+	private void SpawnProceduralCloud()
+	{
+		// 1. Generate a random, squashed sphere
+		MeshInstance3D cloud = new MeshInstance3D();
+		SphereMesh mesh = new SphereMesh { 
+			Radius = (float)GD.RandRange(3.0f, 6.0f), 
+			Height = (float)GD.RandRange(1.5f, 2.5f) // Squashed on the Y axis
+		};
+		cloud.Mesh = mesh;
+
+		// 2. Make it look like soft, semi-transparent cotton
+		StandardMaterial3D mat = new StandardMaterial3D {
+			AlbedoColor = new Color(1f, 1f, 1f, 0.4f), // 40% opaque white
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+			Roughness = 1.0f,
+			// Turn on shadows so it darkens the grid as it passes!
+			DistanceFadeMode = BaseMaterial3D.DistanceFadeModeEnum.PixelAlpha,
+			DistanceFadeMaxDistance = 15f,
+			DistanceFadeMinDistance = 5f
+		};
+		cloud.MaterialOverride = mat;
+		cloud.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+
+		// 3. Position it high in the sky, off to the side of the screen
+		float startX = -15f;
+		float endX = (GridWidth * TileSize) + 25f;
+		float zPos = (float)GD.RandRange(-5f, (GridDepth * TileSize) + 5f);
+		float height = (float)GD.RandRange(12f, 18f); // High above the board
+		
+		cloud.Position = new Vector3(startX, height, zPos);
+		
+		// Optional: Random rotation so they don't all look identical
+		cloud.RotationDegrees = new Vector3(0, (float)GD.RandRange(0, 360), 0);
+		
+		// Add to a background container if you have one, or just the GameManager
+		AddChild(cloud);
+
+		// 4. Tween it slowly across the sky like wind
+		float windSpeedDuration = (float)GD.RandRange(25f, 45f); // Very slow, lazy movement
+		
+		Tween cloudTween = CreateTween();
+		cloudTween.TweenProperty(cloud, "position:x", endX, windSpeedDuration).SetTrans(Tween.TransitionType.Linear);
+		
+		// Clean up the memory when it drifts out of view!
+		cloudTween.Finished += () => cloud.QueueFree();
+	}
+	
+	// We call this when clicking a roster button, OR after equipping/unequipping an item
+	private void RefreshPartyDetailsAndInventory(PersistentUnit unit)
+	{
+		_viewedPartyMember = unit;
+		
+		// Clear the right side of the menu (Details + Inventory)
+		if (_rightMenuPanel != null)
+		{
+			foreach (Node child in _rightMenuPanel.GetChildren()) child.QueueFree();
+
+			// 1. Rebuild Details (Top Right)
+			_rightMenuPanel.AddChild(BuildPartyMemberDetails(unit));
+			
+			// 2. Rebuild Inventory (Bottom Right)
+			_rightMenuPanel.AddChild(BuildInventoryUI());
+
+			// Tiny juice on the refresh
+			_rightMenuPanel.Modulate = new Color(1, 1, 1, 0);
+			CreateTween().TweenProperty(_rightMenuPanel, "modulate:a", 1.0f, 0.15f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+	}
+
+	// Make sure in TogglePartyMenu() you create _rightMenuPanel and add it to `mainHBox` 
+	// instead of `detailsContainer`, then call RefreshPartyDetailsAndInventory(_party[0]);
+
+	private Control BuildPartyMemberDetails(PersistentUnit unit)
+	{
+		HBoxContainer layout = new HBoxContainer();
+		layout.AddThemeConstantOverride("separation", 40);
+
+		TextureRect portrait = new TextureRect {
+			Texture = GD.Load<Texture2D>(unit.Profile.SpritePath),
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+			CustomMinimumSize = new Vector2(240, 350), 
+			SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+		};
+		layout.AddChild(portrait);
+
+		VBoxContainer rightCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center };
+		rightCol.AddThemeConstantOverride("separation", 15);
+		layout.AddChild(rightCol);
+
+		RichTextLabel nameLabel = new RichTextLabel {
+			BbcodeEnabled = true, FitContent = true, ScrollActive = false,
+			Text = $"[left][font_size=32][b][wave amp=20 freq=2]{unit.Profile.Name}[/wave][/b][/font_size]\n[color=gold]Level {unit.Level}[/color][/left]"
+		};
+		rightCol.AddChild(nameLabel);
+
+		string typeText = unit.IsPlayerCharacter ? "[color=#44ff44]Player Character[/color]" : "[color=#44ccff]Companion[/color]";
+		RichTextLabel combatStats = new RichTextLabel {
+			BbcodeEnabled = true, FitContent = true, ScrollActive = false,
+			Text = $"[left]{typeText}\n\n[color=#aaaaaa]Max HP:[/color] {unit.GetTotalMaxHP()}\n[color=#aaaaaa]Damage:[/color] {unit.GetTotalDamage()}\n[color=#aaaaaa]Movement:[/color] {unit.GetTotalMovement()}[/left]"
+		};
+		rightCol.AddChild(combatStats);
+
+		// Equipment Slots Panel
+		rightCol.AddChild(new HSeparator());
+		Label equipTitle = new Label { Text = "Equipment (Click to Remove)" };
+		equipTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		rightCol.AddChild(equipTitle);
+
+		HBoxContainer equipBox = new HBoxContainer();
+		equipBox.AddThemeConstantOverride("separation", 20);
+		rightCol.AddChild(equipBox);
+
+		equipBox.AddChild(CreateEquipmentSlot("Weapon", unit.EquippedWeapon, EquipSlot.Weapon));
+		equipBox.AddChild(CreateEquipmentSlot("Armor", unit.EquippedArmor, EquipSlot.Armor));
+
+		return layout;
+	}
+
+	private Control CreateEquipmentSlot(string slotName, Equipment equip, EquipSlot slotType)
+	{
+		VBoxContainer slotBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		
+		Label title = new Label { Text = slotName, HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 14);
+		title.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+		slotBox.AddChild(title);
+
+		Button slotBtn = new Button { CustomMinimumSize = new Vector2(80, 80), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
+		slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle);
+		slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle);
+		slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle);
+		slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+
+		if (equip != null) 
+		{
+			slotBtn.Icon = GD.Load<Texture2D>(equip.IconPath);
+			slotBtn.TooltipText = $"{equip.Name}\n{equip.Description}";
+			
+			// UNEQUIP LOGIC
+			slotBtn.Pressed += () => {
+				if (slotType == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = null;
+				else _viewedPartyMember.EquippedArmor = null;
+				Inventory.Add(equip);
+				RefreshPartyDetailsAndInventory(_viewedPartyMember);
+			};
+		}
+		else 
+		{
+			slotBtn.Text = "+"; 
+			slotBtn.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.3f));
+		}
+
+		slotBox.AddChild(slotBtn);
+		AddSlotJuice(slotBtn, 0.1f); 
+		return slotBox;
+	}
+
+	private PanelContainer BuildInventoryUI()
+	{
+		PanelContainer invPanel = new PanelContainer { Theme = MasterTheme };
+		VBoxContainer invBox = new VBoxContainer();
+		invPanel.AddChild(invBox);
+
+		Label invTitle = new Label { Text = "Party Inventory (Click to Equip to Current Unit)" };
+		invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		invBox.AddChild(invTitle);
+		invBox.AddChild(new HSeparator());
+
+		GridContainer grid = new GridContainer { Columns = 10 };
+		grid.AddThemeConstantOverride("h_separation", 10);
+		grid.AddThemeConstantOverride("v_separation", 10);
+		invBox.AddChild(grid);
+
+		for (int i = 0; i < 20; i++) // 20 standard slots
+		{
+			Button slotBtn = new Button { CustomMinimumSize = new Vector2(70, 70), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
+			slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle);
+			slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle);
+			slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle);
+			slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+			
+			if (i < Inventory.Count && Inventory[i] is Equipment equipItem)
+			{
+				slotBtn.Icon = GD.Load<Texture2D>(equipItem.IconPath);
+				slotBtn.TooltipText = $"{equipItem.Name}\n{equipItem.Description}";
+				
+				// EQUIP LOGIC
+				slotBtn.Pressed += () => {
+					Inventory.Remove(equipItem);
+					
+					// Swap if a slot is occupied!
+					Equipment oldItem = equipItem.Slot == EquipSlot.Weapon ? _viewedPartyMember.EquippedWeapon : _viewedPartyMember.EquippedArmor;
+					if (oldItem != null) Inventory.Add(oldItem);
+
+					if (equipItem.Slot == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = equipItem;
+					else _viewedPartyMember.EquippedArmor = equipItem;
+
+					RefreshPartyDetailsAndInventory(_viewedPartyMember);
+				};
+			}
+
+			grid.AddChild(slotBtn);
+			AddSlotJuice(slotBtn, i * 0.015f); // Beautiful ripple cascade
+		}
+
+		return invPanel;
+	}
+	
+	private void AddSlotJuice(Button slot, float delay = 0f)
+	{
+		slot.PivotOffset = slot.CustomMinimumSize / 2;
+		slot.Scale = Vector2.Zero;
+		
+		CreateTween().TweenProperty(slot, "scale", Vector2.One, 0.3f)
+			.SetTrans(Tween.TransitionType.Back)
+			.SetEase(Tween.EaseType.Out)
+			.SetDelay(delay);
+
+		slot.MouseEntered += () => {
+			slot.PivotOffset = slot.Size / 2;
+			CreateTween().TweenProperty(slot, "scale", new Vector2(1.1f, 1.1f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		};
+		
+		slot.MouseExited += () => {
+			CreateTween().TweenProperty(slot, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		};
+
+		slot.ButtonDown += () => {
+			CreateTween().TweenProperty(slot, "scale", new Vector2(0.9f, 0.9f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		};
+	}
+	
+	public async Task RollForLoot()
+	{
+		// 20% Chance to drop an item
+		if (GD.Randf() > 0.8f) return; 
+
+		var items = ItemDatabase.Values.ToList();
+		Equipment droppedItem = items[GD.RandRange(0, items.Count - 1)].Clone();
+
+		await ShowLootScreen(droppedItem);
+	}
+
+public async Task ShowLootScreen(Equipment item)
+	{
+		_lootScreenActive = true;
+		ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		TaskCompletionSource<bool> tcs = new TaskCompletionSource<bool>();
+
+		Control uiRoot = new Control();
+		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot);
+		else AddChild(uiRoot);
+
+		// === THE FIX ===
+		// Give it a strict width of 400 so we can reliably calculate its center
+		PanelContainer panel = new PanelContainer { Theme = MasterTheme, CustomMinimumSize = new Vector2(400, 0) };
+		uiRoot.AddChild(panel);
+		
+		// Set to TopLeft so Godot doesn't add hidden offset math
+		panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+		
+		// Now our manual math centers it perfectly on every screen size!
+		float screenWidth = GetViewport().GetVisibleRect().Size.X;
+		panel.Position = new Vector2((screenWidth / 2f) - 200f, -300f); 
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		vbox.AddThemeConstantOverride("separation", 15);
+		panel.AddChild(vbox);
+
+		Label title = new Label { Text = "Loot Found!", HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 28);
+		title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.2f));
+		vbox.AddChild(title);
+
+		TextureRect icon = new TextureRect {
+			Texture = GD.Load<Texture2D>(item.IconPath),
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+			CustomMinimumSize = new Vector2(80, 80),
+			SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter
+		};
+		vbox.AddChild(icon);
+
+		RichTextLabel itemName = new RichTextLabel { 
+			BbcodeEnabled = true, 
+			FitContent = true, 
+			ScrollActive = false,
+			// We use [center] inside the text instead of HorizontalAlignment for RichTextLabels!
+			Text = $"[center]{item.Name}\n[color=#aaaaaa]{item.Description}[/color][/center]",
+			CustomMinimumSize = new Vector2(350, 0) // Give it enough width to center properly
+		};
+		// RichTextLabels use "normal_font_size" instead of just "font_size"
+		itemName.AddThemeFontSizeOverride("normal_font_size", 20); 
+		vbox.AddChild(itemName);
+
+		Button grabBtn = new Button { Text = "Grab", CustomMinimumSize = new Vector2(200, 60) };
+		AddButtonJuice(grabBtn);
+		vbox.AddChild(grabBtn);
+
+		// Bouncy drop-in animation
+		CreateTween().TweenProperty(panel, "position:y", 150f, 0.6f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+
+		grabBtn.Pressed += () => 
+		{
+			Inventory.Add(item); // Add to player inventory!
+			
+			Tween outTween = CreateTween();
+			outTween.TweenProperty(panel, "position:y", -300f, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outTween.Finished += () => 
+			{
+				uiRoot.QueueFree();
+				if (DimOverlay != null && !_levelUpActive && !_dialogueActive) DimOverlay.Visible = false;
+				_lootScreenActive = false;
+				tcs.SetResult(true); // Unblock the sequence!
+			};
+		};
+
+		await tcs.Task;
 	}
 }

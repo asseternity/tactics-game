@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://8xewtgmnbq0g"
-path="res://.godot/imported/archer.png-c0ac80a7af9a946ec45c602d143bb596.ctex"
+uid="uid://c1ac4pp5x4dhd"
+path="res://.godot/imported/HighRes3.png-77019dd3a9c473b2dee2f65f167af6f3.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/archer.png"
-dest_files=["res://.godot/imported/archer.png-c0ac80a7af9a946ec45c602d143bb596.ctex"]
+source_file="res://assets/HighRes3.png"
+dest_files=["res://.godot/imported/HighRes3.png-77019dd3a9c473b2dee2f65f167af6f3.ctex"]
 
 [params]
 

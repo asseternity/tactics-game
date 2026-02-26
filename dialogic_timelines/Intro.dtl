@@ -1,8 +1,15 @@
-join Commander center
-Commander: Goblins, or Ogre?
-- Goblins
-	Commander: Let's kick those green asses!
-	[signal arg="JumpTo:Path_Goblins"]
-- Ogre
-	Commander: Brave choice. Onwards!
-	[signal arg="JumpTo:Path_Ogre"]
+join Ambrose left
+join Dougal right
+Dougal: Three guards, or an orc?
+- Guards
+	Ambrose: The guards.
+	Dougal: Let's kick their  asses!
+	Dougal: Ready to head out?
+	Ambrose: Aye, friend.
+	[signal arg="JumpTo:Path_Guards"]
+- Orc
+	Ambrose: The orc.
+	Dougal: Brave choice. Onwards!
+	Dougal: Ready to head out?
+	Ambrose: Aye, friend.
+	[signal arg="JumpTo:Path_Orc"]

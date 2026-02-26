@@ -2,6 +2,9 @@
 using Godot;
 using System.Collections.Generic;
 
+// === NEW: Facing Enum ===
+public enum UnitFacing { Left, Right, Center }
+
 public struct UnitProfile
 {
 	public string Name;
@@ -11,11 +14,16 @@ public struct UnitProfile
 	public int AttackRange; 
 	public int Movement;
 	public int XPReward;
+	
+	// === NEW: Default Facing ===
+	public UnitFacing DefaultFacing;
 
-	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward)
+	// Note the new parameter at the end!
+	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward, UnitFacing defaultFacing = UnitFacing.Center)
 	{
 		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
 		AttackDamage = attackDmg; AttackRange = attackRange; Movement = movement; XPReward = xpReward;
+		DefaultFacing = defaultFacing;
 	}
 }
 
@@ -26,6 +34,7 @@ public class PersistentUnit
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
 	
+	// Base Stats
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
@@ -33,9 +42,16 @@ public class PersistentUnit
 	public int Movement;
 	public int XPReward; 
 
-	// === NEW: Choice of Games style Relationship Tracking ===
 	public bool IsPlayerCharacter = false;
 	public Dictionary<string, int> Relationships = new();
+
+	// === NEW: Equipment Slots & Dynamic Stat Getters ===
+	public Equipment EquippedWeapon;
+	public Equipment EquippedArmor;
+
+	public int GetTotalMaxHP() => MaxHP + (EquippedWeapon?.BonusMaxHP ?? 0) + (EquippedArmor?.BonusMaxHP ?? 0);
+	public int GetTotalDamage() => AttackDamage + (EquippedWeapon?.BonusDamage ?? 0) + (EquippedArmor?.BonusDamage ?? 0);
+	public int GetTotalMovement() => Movement + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
 
 	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
@@ -48,7 +64,6 @@ public class PersistentUnit
 		XPReward = profile.XPReward;
 		IsPlayerCharacter = isPlayer;
 
-		// Initialize default CoG-style relationships for companions!
 		if (!IsPlayerCharacter)
 		{
 			Relationships.Add("Respect", 50);
@@ -59,9 +74,9 @@ public class PersistentUnit
 
 	public void HealBetweenBattles()
 	{
-		CurrentHP += Mathf.RoundToInt(MaxHP * 0.3f);
+		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
 		if (CurrentHP <= 0) CurrentHP = 1; 
-		if (CurrentHP > MaxHP) CurrentHP = MaxHP;
+		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
 	}
 }
 
@@ -116,12 +131,12 @@ public static class GameScript
 			{
 				"Intro", new List<ScriptEvent>
 				{
-					ScriptEvent.AddPartyMember("Knight"),
-					ScriptEvent.AddPartyMember("Archer"),
+					ScriptEvent.AddPartyMember("Ambrose"),
+					ScriptEvent.AddPartyMember("Dougal"),
 					ScriptEvent.Battle(new BattleSetup 
 					{
 						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-						Enemies = { new UnitSpawn("Goblin", new Vector3(4,0,4)) },
+						Enemies = { new UnitSpawn("Guard", new Vector3(4,0,4)) },
 						MidBattleEvents = { new MidBattleEvent(2, "res://dialogic_timelines/TauntTurn1.dtl") },
 						Ground = GroundType.Dirt,
 						Light = LightingMood.Morning,
@@ -132,15 +147,15 @@ public static class GameScript
 				}
 			},
 			{
-				"Path_Goblins", new List<ScriptEvent>
+				"Path_Guards", new List<ScriptEvent>
 				{
 					ScriptEvent.Battle(new BattleSetup 
 					{
 						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
 						Enemies = { 
-							new UnitSpawn("Goblin", new Vector3(4,0,4)), 
-							new UnitSpawn("Goblin", new Vector3(6,0,4)), 
-							new UnitSpawn("Goblin", new Vector3(6,0,6))
+							new UnitSpawn("Guard", new Vector3(4,0,4)), 
+							new UnitSpawn("Guard", new Vector3(6,0,4)), 
+							new UnitSpawn("Guard", new Vector3(6,0,6))
 						}, // <--- THE FIX: This bracket closes the Enemies list!
 						Ground = GroundType.Grass,
 						Light = LightingMood.Night,
@@ -151,12 +166,12 @@ public static class GameScript
 				}
 			},
 			{
-				"Path_Ogre", new List<ScriptEvent>
+				"Path_Orc", new List<ScriptEvent>
 				{
 					ScriptEvent.Battle(new BattleSetup 
 					{
 						FriendlySpawns = { new Vector3(0,0,0), new Vector3(2,0,0) },
-						Enemies = { new UnitSpawn("Ogre", new Vector3(6,0,6)) },
+						Enemies = { new UnitSpawn("Orc", new Vector3(6,0,6)) },
 						Ground = GroundType.Dirt,
 						Light = LightingMood.Night,
 						ElevationEnabled = true
@@ -187,4 +202,39 @@ public struct MidBattleEvent
 		Turn = turn; 
 		TimelinePath = path; 
 	}
+}
+
+// === NEW: Clean Item & Equipment Architecture ===
+public enum EquipSlot { Weapon, Armor }
+
+public class GameItem
+{
+	public string Id;
+	public string Name;
+	public string IconPath;
+	public string Description;
+}
+
+public class Equipment : GameItem
+{
+	public EquipSlot Slot;
+	public int BonusMaxHP;
+	public int BonusDamage;
+	public int BonusMovement;
+	
+	public Equipment(string id, string name, string iconPath, EquipSlot slot, int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0)
+	{
+		Id = id; Name = name; IconPath = iconPath; Slot = slot;
+		BonusMaxHP = bonusHp; BonusDamage = bonusDmg; BonusMovement = bonusMov;
+		
+		// Generate the description dynamically for the tooltips!
+		List<string> stats = new();
+		if (BonusDamage > 0) stats.Add($"+{BonusDamage} DMG");
+		if (BonusMaxHP > 0) stats.Add($"+{BonusMaxHP} HP");
+		if (BonusMovement > 0) stats.Add($"+{BonusMovement} Move");
+		Description = string.Join(" | ", stats);
+	}
+
+	// === NEW: Safely clone the archetype for the inventory ===
+	public Equipment Clone() => (Equipment)this.MemberwiseClone();
 }
