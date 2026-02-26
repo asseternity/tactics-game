@@ -50,7 +50,7 @@ public partial class GameManager : Node3D
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	private List<PersistentUnit> _party = new(); 
 	private System.Collections.Generic.Dictionary<string, List<ScriptEvent>> _scriptDatabase = new();
-	private string _currentSection = "Intro"; // Always start here!
+	private string _currentSection = "Awakening_Fight"; // Always start here!
 	private int _currentScriptIndex = -1;
 	private string _pendingSection = ""; // Holds the choice Dialogic sends us
 
@@ -90,8 +90,8 @@ public partial class GameManager : Node3D
 		CallDeferred(MethodName.SetupUnifiedUI);
 
 		// Append the UnitFacing enum to the end of your profiles!
-		_unitDatabase["Ambrose"] = new UnitProfile("Knight", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
-		_unitDatabase["Dougal"] = new UnitProfile("Archer", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Dougal"] = new UnitProfile("Dougal", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
 		_unitDatabase["Guard"] = new UnitProfile("Goblin", "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right);
 		_unitDatabase["Orc"]   = new UnitProfile("Ogre", "res://assets/HR_ORC2.png", 25, 8, 1, 2, 120, UnitFacing.Center);
 		
@@ -100,7 +100,7 @@ public partial class GameManager : Node3D
 		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
 
 		// === UPDATED SCRIPT INIT ===
-		_scriptDatabase = GameScript.GetMainScript();
+		_scriptDatabase = GameScript.LoadFromJSON();
 
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
@@ -116,6 +116,36 @@ public partial class GameManager : Node3D
 
 		CallDeferred("UpdateStatsUI");
 		AdvanceScript();
+	}
+	
+	public override void _ExitTree()
+	{
+		// 1. === THE FIX: Sever Autoload Connections! ===
+		// If we don't do this, the Dialogic singleton keeps our C# assembly trapped in memory.
+		if (_dialogic != null)
+		{
+			if (_dialogic.IsConnected("timeline_ended", new Callable(this, MethodName.OnTimelineEnded)))
+				_dialogic.Disconnect("timeline_ended", new Callable(this, MethodName.OnTimelineEnded));
+				
+			if (_dialogic.IsConnected("signal_event", new Callable(this, MethodName.OnDialogicSignal)))
+				_dialogic.Disconnect("signal_event", new Callable(this, MethodName.OnDialogicSignal));
+		}
+
+		// 2. Free the static singleton so C# can safely unload the assembly!
+		if (Instance == this)
+		{
+			Instance = null;
+		}
+
+		// 3. Clear out lists of Nodes
+		_units.Clear();
+		_obstacles.Clear();
+		_activeDioramas.Clear();
+		_nightLights.Clear();
+		_grid.Clear();
+		
+		// 4. Kill UI Tween
+		if (_uiTween != null && _uiTween.IsValid()) _uiTween.Kill();
 	}
 
 	// === RTS CAMERA LOGIC ===
@@ -922,8 +952,8 @@ private async Task PerformAttackAsync(Unit attacker, Unit target)
 		if (currentEvent.Type == EventType.AddPartyMember)
 		{
 			// === CRITICAL FIX: This line defines who the main character is! ===
-			// If this is missing, the Knight will think they are a companion.
-			bool isPlayer = currentEvent.ProfileId == "Knight"; 
+			// If this is missing, Ambrose will think they are a companion.
+			bool isPlayer = currentEvent.ProfileId == "Ambrose"; 
 			
 			// Pass that 'isPlayer' bool into the new unit
 			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], isPlayer));
@@ -1435,17 +1465,109 @@ private async Task PerformAttackAsync(Unit attacker, Unit target)
 	
 	private void OnDialogicSignal(string argument)
 	{
-		// We expect Dialogic to send strings like "JumpTo:Path_Ogre"
+		// Catch script branching signals
 		if (argument.StartsWith("JumpTo:"))
 		{
 			_pendingSection = argument.Split(":")[1];
 			GD.Print($"🔀 Branch chosen! Queuing up: {_pendingSection}");
 		}
+		// === NEW: Catch Relationship Updates! ===
+		else if (argument.StartsWith("Rel:"))
+		{
+			// Expected format: "Rel:CharacterName:Stat:Amount"
+			// Example: "Rel:Dougal:Agreement:10" or "Rel:Ambrose:Fear:-5"
+			string[] parts = argument.Split(':');
+			if (parts.Length == 4)
+			{
+				string charName = parts[1];
+				string relType = parts[2];
+				if (int.TryParse(parts[3], out int amount))
+				{
+					UpdateRelationship(charName, relType, amount);
+				}
+			}
+		}
+	}
+
+	private void UpdateRelationship(string charName, string relType, int amount)
+	{
+		// Find the companion in the active party roster
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		
+		if (companion != null && companion.Relationships.ContainsKey(relType))
+		{
+			// Apply the math and clamp it between 0 and 100 so it doesn't break your UI bars!
+			companion.Relationships[relType] = Mathf.Clamp(companion.Relationships[relType] + amount, 0, 100);
+			
+			// Trigger the bouncy UI notification!
+			ShowRelationshipNotification(charName, relType, amount);
+		}
+	}
+
+	private void ShowRelationshipNotification(string charName, string relType, int amount)
+	{
+		string sign = amount > 0 ? "+" : ""; // Negative numbers already include the "-" sign naturally
+		string text = $"{charName}: {sign}{amount} {relType}";
+		
+		// Green for positive, Red for negative
+		Color themeColor = amount > 0 ? new Color(0.4f, 1f, 0.5f) : new Color(1f, 0.4f, 0.4f);
+
+		PanelContainer panel = new PanelContainer();
+		
+		// Sleek, semi-transparent dark badge with a colored border
+		StyleBoxFlat style = new StyleBoxFlat {
+			BgColor = new Color(0.08f, 0.08f, 0.12f, 0.95f),
+			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
+			BorderWidthLeft = 3, BorderWidthRight = 3, BorderWidthTop = 3, BorderWidthBottom = 3,
+			BorderColor = themeColor,
+			ShadowSize = 10, ShadowColor = new Color(0, 0, 0, 0.5f)
+		};
+		panel.AddThemeStyleboxOverride("panel", style);
+
+		MarginContainer margin = new MarginContainer();
+		margin.AddThemeConstantOverride("margin_left", 20); margin.AddThemeConstantOverride("margin_right", 20);
+		margin.AddThemeConstantOverride("margin_top", 10); margin.AddThemeConstantOverride("margin_bottom", 10);
+		panel.AddChild(margin);
+
+		Label lbl = new Label { Text = text, HorizontalAlignment = HorizontalAlignment.Center };
+		lbl.AddThemeFontSizeOverride("font_size", 22);
+		lbl.AddThemeColorOverride("font_color", themeColor);
+		if (MasterTheme != null && MasterTheme.DefaultFont != null) lbl.AddThemeFontOverride("font", MasterTheme.DefaultFont);
+		margin.AddChild(lbl);
+
+		// Safely attach to the highest UI layer so it renders above the dim overlay
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(panel);
+		else AddChild(panel);
+
+		// JUICE: Slide in from the top-right corner, like a Persona / Bioware RPG!
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+		
+		// Wait 1 frame so Godot can calculate the width of the text label
+		CallDeferred(MethodName.AnimateRelationshipNotification, panel, screenSize);
+	}
+
+	private void AnimateRelationshipNotification(PanelContainer panel, Vector2 screenSize)
+	{
+		float panelWidth = panel.Size.X;
+		float startX = screenSize.X + 50f; // Start hidden off-screen to the right
+		float endX = screenSize.X - panelWidth - 40f; // End resting near the top right corner
+		float yPos = 40f; // Distance from the top of the screen
+		
+		panel.Position = new Vector2(startX, yPos);
+
+		Tween t = CreateTween();
+		// 1. Violent, snappy slide-in
+		t.TweenProperty(panel, "position:x", endX, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		// 2. Let the player read it
+		t.TweenInterval(2.5f);
+		// 3. Zip back off screen and destroy
+		t.TweenProperty(panel, "position:x", startX, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		t.Finished += () => panel.QueueFree();
 	}
 	
 	private Control _activePartyMenu;
 
-private void TogglePartyMenu()
+	private void TogglePartyMenu()
 	{
 		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu) return;
 
@@ -2018,9 +2140,6 @@ private void TogglePartyMenu()
 		}
 	}
 
-	// Make sure in TogglePartyMenu() you create _rightMenuPanel and add it to `mainHBox` 
-	// instead of `detailsContainer`, then call RefreshPartyDetailsAndInventory(_party[0]);
-
 	private Control BuildPartyMemberDetails(PersistentUnit unit)
 	{
 		HBoxContainer layout = new HBoxContainer();
@@ -2064,6 +2183,46 @@ private void TogglePartyMenu()
 
 		equipBox.AddChild(CreateEquipmentSlot("Weapon", unit.EquippedWeapon, EquipSlot.Weapon));
 		equipBox.AddChild(CreateEquipmentSlot("Armor", unit.EquippedArmor, EquipSlot.Armor));
+
+		// === RESTORED: CoG Relationship Bars ===
+		if (!unit.IsPlayerCharacter)
+		{
+			rightCol.AddChild(new HSeparator());
+			Label relTitle = new Label { Text = "Dynamics with You" };
+			relTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+			rightCol.AddChild(relTitle);
+
+			foreach (var rel in unit.Relationships)
+			{
+				VBoxContainer barBox = new VBoxContainer();
+				// Red for negative/fear themes, green/blue for positive themes
+				Color barColor = rel.Key == "Fear" ? new Color(0.8f, 0.3f, 0.3f) : new Color(0.3f, 0.8f, 0.5f);
+				
+				ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(0, 22), ShowPercentage = false, MaxValue = 100 };
+				StyleBoxFlat bgStyle = new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 };
+				StyleBoxFlat fillStyle = new StyleBoxFlat { BgColor = barColor, CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 };
+				
+				// Godot 4 uses "background" instead of "bg"
+				bar.AddThemeStyleboxOverride("background", bgStyle);
+				bar.AddThemeStyleboxOverride("fill", fillStyle);
+
+				Label barLabel = new Label { Text = $"  {rel.Key}: {rel.Value}%", VerticalAlignment = VerticalAlignment.Center };
+				barLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+				barLabel.AddThemeFontSizeOverride("font_size", 14);
+				barLabel.AddThemeColorOverride("font_color", Color.Color8(255,255,255,220));
+				bar.AddChild(barLabel);
+
+				barBox.AddChild(bar);
+				rightCol.AddChild(barBox);
+
+				bar.Value = 0;
+				
+				// Juice: Wait for the bar to enter the tree, then fill it up smoothly!
+				bar.TreeEntered += () => {
+					CreateTween().TweenProperty(bar, "value", (double)rel.Value, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+				};
+			}
+		}
 
 		return layout;
 	}

@@ -1,9 +1,0 @@
-join Ambrose left
-join Dougal right
-Dougal: We did a great job! What do we do next?
-- Continue the fight
-	Dougal: Then let's push forward!
-- Ask for reinforcements
-	Dougal: I'll call HQ right away.
-- Retreat
-	Dougal: Understood... we pull back.

@@ -1,0 +1,275 @@
+{
+  "Sections": {
+	"Awakening_Fight": {
+	  "Events": [
+		{ "Type": "AddPartyMember", "ProfileId": "Ambrose" },
+		{ "Type": "AddPartyMember", "ProfileId": "Dougal" },
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Guard", "Guard"],
+		  "Ground": "Marble",
+		  "Light": "Indoors",
+		  "ElevationEnabled": false,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 2,
+			  "TimelineName": "Awake_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+				{ "Speaker": "Ambrose", "Text": "Please tell me these are the only two. I haven't even stretched properly yet." },
+				{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+				{ "Speaker": "Dougal", "Text": "Focus on your footwork and shut your mouth!" }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Post_Awakening",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Speaker": "Ambrose", "Text": "Ugh, blood on the velvet lapels. Do you have any idea how much a good tailor costs in this economy?" },
+			{ "Speaker": "Dougal", "Text": "Quit your whining, pretty boy. We're deep in enemy territory. More are coming." },
+			{ "Speaker": "Ambrose", "Text": "Right, right. So, what's the play? Do we slip through the shadows, or give them an encore?" },
+			{
+			  "Choices": [
+				{
+				  "Text": "Sneak through the perimeter.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Let's stick to the shadows. I'd rather not ruin my boots." },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:10" },
+					{ "Speaker": "Dougal", "Text": "Smartest thing you've said all night. Keep your head down." },
+					{ "Action": "Signal", "Value": "JumpTo:Path_Stealth" }
+				  ]
+				},
+				{
+				  "Text": "Kick down the front gate.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Why hide? I look fantastic tonight. Let's give them a show." },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-15" },
+					{ "Speaker": "Dougal", "Text": "You arrogant fool. Fine, but I'm not carrying your corpse." },
+					{ "Action": "Signal", "Value": "JumpTo:Path_Direct" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		}
+	  ]
+	},
+	
+	"Path_Stealth": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Stealth_Encounter",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Speaker": "Dougal", "Text": "Shh. Up ahead. A lone sentry." },
+			{ "Action": "Join", "Character": "Guard", "Position": "center" },
+			{ "Speaker": "Guard", "Text": "...swore I heard something over here..." },
+			{ "Speaker": "Ambrose", "Text": "I can talk our way past him. Or you can introduce him to your axe. Your call, old man." },
+			{
+			  "Choices": [
+				{
+				  "Text": "I'll charm him.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Watch a master at work." },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Fear:5" },
+					{ "Speaker": "Dougal", "Text": "This is going to end terribly." },
+					{ "Action": "Signal", "Value": "JumpTo:Talk_It_Out" }
+				  ]
+				},
+				{
+				  "Text": "Take him out quietly.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Do your thing, Dougal. Try not to make a mess." },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:15" },
+					{ "Speaker": "Dougal", "Text": "Finally, we speak the same language." },
+					{ "Action": "Signal", "Value": "JumpTo:Backstab_Guard" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		}
+	  ]
+	},
+
+	"Talk_It_Out": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Guard_Bribe",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Guard", "Position": "right" },
+			{ "Speaker": "Ambrose", "Text": "Evening, my good man! Beautiful night for a patrol, wouldn't you say?" },
+			{ "Speaker": "Guard", "Text": "What in the blazes?! Intruders! I'm calling the—" },
+			{ "Speaker": "Ambrose", "Text": "Ah, wait, wait! Look at this heavy purse of gold. Awfully heavy to carry all by myself." },
+			{
+			  "Choices": [
+				{
+				  "Text": "Bribe him.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Take this, turn around, and buy yourself something nice." },
+					{ "Speaker": "Guard", "Text": "Uh... right. I didn't see nothing. Just some shadows." },
+					{ "Action": "Leave", "Character": "Guard" },
+					{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+					{ "Speaker": "Dougal", "Text": "A waste of good coin, but we're through." },
+					{ "Action": "Signal", "Value": "JumpTo:Boss_Fight" }
+				  ]
+				},
+				{
+				  "Text": "Sike! Attack him!",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "...But I think I'll keep it. Dougal, strike!" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:10" },
+					{ "Speaker": "Guard", "Text": "You trickster!" },
+					{ "Action": "Signal", "Value": "JumpTo:Backstab_Guard" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		}
+	  ]
+	},
+
+	"Backstab_Guard": {
+	  "Events": [
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Guard"],
+		  "Ground": "Dirt",
+		  "Light": "Night",
+		  "ElevationEnabled": true
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Post_Backstab",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Speaker": "Dougal", "Text": "Messy, but effective. The captain is just ahead." },
+			{ "Speaker": "Ambrose", "Text": "Lead the way, my delightfully violent friend." },
+			{ "Action": "Signal", "Value": "JumpTo:Boss_Fight" }
+		  ]
+		}
+	  ]
+	},
+
+	"Path_Direct": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Loud_Approach",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Speaker": "Ambrose", "Text": "Ho there! We are here to ruin someone's evening!" },
+			{ "Speaker": "Dougal", "Text": "You've alerted the heavy hitters. Brace yourself, boy!" }
+		  ]
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Orc"],
+		  "Ground": "Grass",
+		  "Light": "Morning",
+		  "ElevationEnabled": true,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 2,
+			  "TimelineName": "Direct_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+				{ "Speaker": "Dougal", "Text": "Hit him harder, you pampered fop! It's barely scratching him!" }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Direct_Aftermath",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Speaker": "Ambrose", "Text": "Whew. He was a big one. I think I chipped a nail." },
+			{ "Speaker": "Dougal", "Text": "We need to keep moving. The inner sanctum is close." },
+			{
+			  "Choices": [
+				{
+				  "Text": "Let's take a quick breather.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "Give me a minute to catch my breath. And fix my hair." },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-10" },
+					{ "Speaker": "Dougal", "Text": "Every second we waste is a second they have to prepare. Fine." },
+					{ "Action": "Signal", "Value": "JumpTo:Boss_Fight" }
+				  ]
+				},
+				{
+				  "Text": "Push forward! Momentum is ours!",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "No rest for the wicked. Let's ride this adrenaline high!" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
+					{ "Speaker": "Dougal", "Text": "That's the spirit! Let's crack some skulls!" },
+					{ "Action": "Signal", "Value": "JumpTo:Boss_Fight" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		}
+	  ]
+	},
+
+	"Boss_Fight": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Boss_Intro",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "center" },
+			{ "Action": "Join", "Character": "Guard", "Position": "right" },
+			{ "Speaker": "Guard", "Text": "You've gone far enough! We have an Ogre on our side!" },
+			{ "Speaker": "Ambrose", "Text": "Oh, wonderful. More brutes who lack conversational skills." },
+			{ "Speaker": "Dougal", "Text": "Less talking, more swinging, Ambrose! Here they come!" }
+		  ]
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Orc", "Guard", "Guard"],
+		  "Ground": "Marble",
+		  "Light": "Indoors",
+		  "ElevationEnabled": true,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 3,
+			  "TimelineName": "Boss_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Orc", "Position": "center" },
+				{ "Speaker": "Orc", "Text": "Me crush tiny men into paste!" },
+				{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+				{ "Speaker": "Ambrose", "Text": "Ugh, the halitosis on this one is the real weapon." }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Victory_End",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
+			{ "Speaker": "Ambrose", "Text": "And that, my grumpy companion, is how it's done." },
+			{ "Speaker": "Dougal", "Text": "Hmph. Not bad. You actually held your own out there." },
+			{ "Speaker": "Ambrose", "Text": "Drinks are on you tonight! Assuming we can find a tavern that hasn't burned down." }
+		  ]
+		}
+	  ]
+	}
+  }
+}

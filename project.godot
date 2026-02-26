@@ -23,13 +23,10 @@ Dialogic="*res://addons/dialogic/Core/DialogicGameHandler.gd"
 directories/dch_directory={
 "Ambrose": "res://dialogic_characters/Ambrose.dch",
 "Dougal": "res://dialogic_characters/Dougal.dch",
-"Guard": "res://dialogic_characters/Guard.dch"
+"Guard": "res://dialogic_characters/Guard.dch",
+"Orc": "res://dialogic_characters/Orc.dch"
 }
-directories/dtl_directory={
-"Intro": "res://dialogic_timelines/Intro.dtl",
-"PostFirstBattle": "res://dialogic_timelines/PostFirstBattle.dtl",
-"TauntTurn1": "res://dialogic_timelines/TauntTurn1.dtl"
-}
+directories/dtl_directory={}
 layout/style_directory={
 "": "res://dialogic_styles/Default.tres",
 "Default": "res://dialogic_styles/Default.tres",
