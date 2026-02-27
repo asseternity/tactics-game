@@ -1,3 +1,4 @@
+// StoryImporter.cs
 using Godot;
 using System.IO;
 using System.Text.Json;
@@ -111,8 +112,9 @@ custom_info = {{}}
 			// SIGNAL MUST BE FIRST (prevents fall-through to text lines)
 			if (step.Action == "Signal" && !string.IsNullOrEmpty(step.Value))
 			{
-				dtl.AppendLine($"{indent}signal {step.Value}");
-				dtl.AppendLine();               // extra blank line = Dialogic loves this
+				// FIX: Using the correct Dialogic 2 syntax for Godot 4!
+				dtl.AppendLine($"{indent}[signal arg=\"{step.Value}\"]");
+				dtl.AppendLine();               
 				continue;
 			}
 

@@ -1,3 +1,4 @@
+// GameScript.cs
 using Godot;
 using System;
 using System.Collections.Generic;
@@ -32,7 +33,7 @@ public static class GameScript
 			{
 				if (ev.Type == "AddPartyMember")
 				{
-					events.Add(ScriptEvent.AddPartyMember(ev.ProfileId));
+					events.Add(ScriptEvent.AddPartyMember(ev.ProfileId, ev.IsPlayer));
 				}
 				else if (ev.Type == "Dialogue")
 				{
@@ -98,6 +99,7 @@ public class StoryEvent
 	public string TimelineName { get; set; }
 	public string TargetSection { get; set; }
 	public List<string> Enemies { get; set; }
+	public bool IsPlayer { get; set; }
 	
 	// === NEW: Battle Setup Properties ===
 	public string Ground { get; set; }

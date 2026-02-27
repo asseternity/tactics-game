@@ -1,0 +1,8 @@
+join Dougal right
+
+join Ambrose left
+
+Dougal: Messy, but effective. The captain is just ahead.
+Ambrose: Lead the way, my delightfully violent friend.
+[signal arg="JumpTo:Boss_Fight"]
+

@@ -1,0 +1,24 @@
+join Ambrose left
+
+join Dougal right
+
+Ambrose: Ugh, blood on the velvet lapels. Do you have any idea how much a good tailor costs in this economy?
+Dougal: Quit your whining, pretty boy. We're deep in enemy territory. More are coming.
+Ambrose: Right, right.
+Dougal: So, what's the play? Do we slip through the shadows, or run in like maniacs?
+
+- Sneak through the perimeter.
+	Ambrose: Let's stick to the shadows. I'd rather not ruin my boots.
+	[signal arg="Rel:Dougal:Agreement:10"]
+
+	Dougal: Smartest thing you've said all night. Keep your head down.
+	[signal arg="JumpTo:Path_Stealth"]
+
+- Kick down the front gate.
+	Ambrose: Why hide? I look fantastic tonight. Let's give them a show.
+	[signal arg="Rel:Dougal:Agreement:-15"]
+
+	Dougal: You arrogant fool. Fine, but I'm not carrying your corpse.
+	[signal arg="JumpTo:Path_Direct"]
+
+

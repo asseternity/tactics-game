@@ -26,7 +26,19 @@ directories/dch_directory={
 "Guard": "res://dialogic_characters/Guard.dch",
 "Orc": "res://dialogic_characters/Orc.dch"
 }
-directories/dtl_directory={}
+directories/dtl_directory={
+"Awake_MidFight": "res://dialogic_timelines/Awake_MidFight.dtl",
+"Boss_Intro": "res://dialogic_timelines/Boss_Intro.dtl",
+"Boss_MidFight": "res://dialogic_timelines/Boss_MidFight.dtl",
+"Direct_Aftermath": "res://dialogic_timelines/Direct_Aftermath.dtl",
+"Direct_MidFight": "res://dialogic_timelines/Direct_MidFight.dtl",
+"Guard_Bribe": "res://dialogic_timelines/Guard_Bribe.dtl",
+"Loud_Approach": "res://dialogic_timelines/Loud_Approach.dtl",
+"Post_Awakening": "res://dialogic_timelines/Post_Awakening.dtl",
+"Post_Backstab": "res://dialogic_timelines/Post_Backstab.dtl",
+"Stealth_Encounter": "res://dialogic_timelines/Stealth_Encounter.dtl",
+"Victory_End": "res://dialogic_timelines/Victory_End.dtl"
+}
 layout/style_directory={
 "": "res://dialogic_styles/Default.tres",
 "Default": "res://dialogic_styles/Default.tres",

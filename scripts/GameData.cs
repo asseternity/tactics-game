@@ -113,11 +113,12 @@ public class ScriptEvent
 	public BattleSetup BattleData;
 	public string ProfileId;
 	public string TargetSection;
+	public bool IsPlayer;
 
 	public static ScriptEvent Dialogue(string path) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path };
 	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
 	// Helper to write cleaner scripts:
-	public static ScriptEvent AddPartyMember(string profileId) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId };
+	public static ScriptEvent AddPartyMember(string profileId, bool isPlayer = false) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId, IsPlayer = isPlayer };
 	// === NEW: Helper to instantly redirect the script! ===
 	public static ScriptEvent JumpToSection(string target) => new ScriptEvent { Type = EventType.JumpToSection, TargetSection = target };
 }

@@ -1,0 +1,25 @@
+join Ambrose left
+
+join Dougal right
+
+Dougal: Shh. Up ahead. A lone sentry.
+join Guard center
+
+Guard: ...swore I heard something over here...
+Ambrose: I can talk our way past him. Or you can introduce him to your axe. Your call, old man.
+
+- I'll charm him.
+	Ambrose: Watch a master at work.
+	[signal arg="Rel:Dougal:Fear:5"]
+
+	Dougal: This is going to end terribly.
+	[signal arg="JumpTo:Talk_It_Out"]
+
+- Take him out quietly.
+	Ambrose: Do your thing, Dougal. Try not to make a mess.
+	[signal arg="Rel:Dougal:Agreement:15"]
+
+	Dougal: Finally, we speak the same language.
+	[signal arg="JumpTo:Backstab_Guard"]
+
+

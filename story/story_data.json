@@ -2,14 +2,14 @@
   "Sections": {
 	"Awakening_Fight": {
 	  "Events": [
-		{ "Type": "AddPartyMember", "ProfileId": "Ambrose" },
-		{ "Type": "AddPartyMember", "ProfileId": "Dougal" },
+		{ "Type": "AddPartyMember", "ProfileId": "Ambrose", "IsPlayer": true },
+		{ "Type": "AddPartyMember", "ProfileId": "Dougal", "IsPlayer": false },
 		{ 
 		  "Type": "Battle", 
 		  "Enemies": ["Guard", "Guard"],
 		  "Ground": "Marble",
-		  "Light": "Indoors",
-		  "ElevationEnabled": false,
+		  "Light": "Morning",
+		  "ElevationEnabled": true,
 		  "MidBattleEvents": [
 			{
 			  "Turn": 2,
@@ -31,7 +31,8 @@
 			{ "Action": "Join", "Character": "Dougal", "Position": "right" },
 			{ "Speaker": "Ambrose", "Text": "Ugh, blood on the velvet lapels. Do you have any idea how much a good tailor costs in this economy?" },
 			{ "Speaker": "Dougal", "Text": "Quit your whining, pretty boy. We're deep in enemy territory. More are coming." },
-			{ "Speaker": "Ambrose", "Text": "Right, right. So, what's the play? Do we slip through the shadows, or give them an encore?" },
+			{ "Speaker": "Ambrose", "Text": "Right, right." },
+			{ "Speaker": "Dougal", "Text": "So, what's the play? Do we slip through the shadows, or run in like maniacs?" },
 			{
 			  "Choices": [
 				{
@@ -243,7 +244,7 @@
 		  "Type": "Battle", 
 		  "Enemies": ["Orc", "Guard", "Guard"],
 		  "Ground": "Marble",
-		  "Light": "Indoors",
+		  "Light": "Morning",
 		  "ElevationEnabled": true,
 		  "MidBattleEvents": [
 			{

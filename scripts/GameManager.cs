@@ -50,7 +50,7 @@ public partial class GameManager : Node3D
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	private List<PersistentUnit> _party = new(); 
 	private System.Collections.Generic.Dictionary<string, List<ScriptEvent>> _scriptDatabase = new();
-	private string _currentSection = "Awakening_Fight"; // Always start here!
+	private string _currentSection = ""; // Always start here!
 	private int _currentScriptIndex = -1;
 	private string _pendingSection = ""; // Holds the choice Dialogic sends us
 
@@ -101,6 +101,7 @@ public partial class GameManager : Node3D
 
 		// === UPDATED SCRIPT INIT ===
 		_scriptDatabase = GameScript.LoadFromJSON();
+		_currentSection = _scriptDatabase.Keys.First();
 
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
@@ -951,12 +952,7 @@ private async Task PerformAttackAsync(Unit attacker, Unit target)
 
 		if (currentEvent.Type == EventType.AddPartyMember)
 		{
-			// === CRITICAL FIX: This line defines who the main character is! ===
-			// If this is missing, Ambrose will think they are a companion.
-			bool isPlayer = currentEvent.ProfileId == "Ambrose"; 
-			
-			// Pass that 'isPlayer' bool into the new unit
-			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], isPlayer));
+			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], currentEvent.IsPlayer));
 			AdvanceScript();
 		}
 		// === NEW: Catch the Jump Command! ===
