@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3 uid="uid://de64t0d2nxpqe"]
 
-[ext_resource type="Script" uid="uid://bhyhlo7c1t4mk" path="res://story/StoryImporter.cs" id="1_qntjt"]
+[ext_resource type="Script" uid="uid://bhyhlo7c1t4mk" path="res://scripts/DialogicPipeline.cs" id="1_qntjt"]
 
 [node name="Node" type="Node"]
 script = ExtResource("1_qntjt")

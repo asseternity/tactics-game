@@ -179,9 +179,15 @@ public partial class Unit : Node3D
 	{
 		if (_sprite == null || Data == null) return;
 
+		// === NEW: Fetch total HP bounds and clamp if necessary! ===
+		int totalMaxHP = Data.GetTotalMaxHP();
+		if (Data.CurrentHP > totalMaxHP) Data.CurrentHP = totalMaxHP; 
+
 		if (!_isPreviewing)
 		{
-			_hpLabel.Text = $"{Data.CurrentHP}/{Data.MaxHP}";   
+			_hpLabel.Text = $"{Data.CurrentHP}/{totalMaxHP}";   
+			_hpBar.MaxValue = totalMaxHP; // Ensure the bar resizes!
+			_hpPreviewBar.MaxValue = totalMaxHP; 
 			CreateTween().TweenProperty(_hpBar, "value", (double)Data.CurrentHP, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 			_hpPreviewBar.Value = Data.CurrentHP;
 		}

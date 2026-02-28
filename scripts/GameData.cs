@@ -1,10 +1,12 @@
-// GameData.cs
 using Godot;
 using System.Collections.Generic;
 
-// === NEW: Facing Enum ===
+// === ENV & FACING ===
 public enum UnitFacing { Left, Right, Center }
+public enum GroundType { Grass, Dirt, Marble }
+public enum LightingMood { Noon, Morning, Night, Indoors }
 
+// === UNITS ===
 public struct UnitProfile
 {
 	public string Name;
@@ -14,11 +16,8 @@ public struct UnitProfile
 	public int AttackRange; 
 	public int Movement;
 	public int XPReward;
-	
-	// === NEW: Default Facing ===
 	public UnitFacing DefaultFacing;
 
-	// Note the new parameter at the end!
 	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward, UnitFacing defaultFacing = UnitFacing.Center)
 	{
 		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
@@ -34,7 +33,6 @@ public class PersistentUnit
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
 	
-	// Base Stats
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
@@ -45,7 +43,6 @@ public class PersistentUnit
 	public bool IsPlayerCharacter = false;
 	public Dictionary<string, int> Relationships = new();
 
-	// === NEW: Equipment Slots & Dynamic Stat Getters ===
 	public Equipment EquippedWeapon;
 	public Equipment EquippedArmor;
 
@@ -87,24 +84,18 @@ public struct UnitSpawn
 	public UnitSpawn(string profileId, Vector3 position) { ProfileId = profileId; Position = position; }
 }
 
-// === NEW: Environment Enums ===
-public enum GroundType { Grass, Dirt, Marble }
-public enum LightingMood { Noon, Morning, Night, Indoors }
-
+// === BATTLE & SCRIPT EVENTS ===
 public class BattleSetup
 {
 	public List<Vector3> FriendlySpawns = new(); 
 	public List<UnitSpawn> Enemies = new();
 	public List<MidBattleEvent> MidBattleEvents = new();
-	
 	public GroundType Ground = GroundType.Grass;
 	public LightingMood Light = LightingMood.Noon;
-	
-	// === NEW: Tactical Elevation! ===
 	public bool ElevationEnabled = false;
 }
 
-public enum EventType { Dialogue, Battle, AddPartyMember, JumpToSection } // <-- NEW: Party Add Event
+public enum EventType { Dialogue, Battle, AddPartyMember, JumpToSection }
 
 public class ScriptEvent
 {
@@ -117,9 +108,7 @@ public class ScriptEvent
 
 	public static ScriptEvent Dialogue(string path) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path };
 	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
-	// Helper to write cleaner scripts:
 	public static ScriptEvent AddPartyMember(string profileId, bool isPlayer = false) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId, IsPlayer = isPlayer };
-	// === NEW: Helper to instantly redirect the script! ===
 	public static ScriptEvent JumpToSection(string target) => new ScriptEvent { Type = EventType.JumpToSection, TargetSection = target };
 }
 
@@ -127,15 +116,10 @@ public struct MidBattleEvent
 {
 	public int Turn;
 	public string TimelinePath;
-	
-	public MidBattleEvent(int turn, string path) 
-	{ 
-		Turn = turn; 
-		TimelinePath = path; 
-	}
+	public MidBattleEvent(int turn, string path) { Turn = turn; TimelinePath = path; }
 }
 
-// === NEW: Clean Item & Equipment Architecture ===
+// === EQUIPMENT ===
 public enum EquipSlot { Weapon, Armor }
 
 public class GameItem
@@ -158,7 +142,6 @@ public class Equipment : GameItem
 		Id = id; Name = name; IconPath = iconPath; Slot = slot;
 		BonusMaxHP = bonusHp; BonusDamage = bonusDmg; BonusMovement = bonusMov;
 		
-		// Generate the description dynamically for the tooltips!
 		List<string> stats = new();
 		if (BonusDamage > 0) stats.Add($"+{BonusDamage} DMG");
 		if (BonusMaxHP > 0) stats.Add($"+{BonusMaxHP} HP");
@@ -166,6 +149,5 @@ public class Equipment : GameItem
 		Description = string.Join(" | ", stats);
 	}
 
-	// === NEW: Safely clone the archetype for the inventory ===
 	public Equipment Clone() => (Equipment)this.MemberwiseClone();
 }

@@ -1,8 +1,6 @@
-join Ambrose left
-
 join Dougal center
 
-join Guard right
+join Guard right [mirrored="true"]
 
 Guard: You've gone far enough! We have an Ogre on our side!
 Ambrose: Oh, wonderful. More brutes who lack conversational skills.

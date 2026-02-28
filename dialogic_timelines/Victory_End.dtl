@@ -1,6 +1,6 @@
 join Ambrose left
 
-join Dougal right
+join Dougal right [mirrored="true"]
 
 Ambrose: And that, my grumpy companion, is how it's done.
 Dougal: Hmph. Not bad. You actually held your own out there.
