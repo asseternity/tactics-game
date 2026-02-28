@@ -20,6 +20,7 @@ public class StoryEvent
 	public string TimelineName { get; set; }
 	public string TargetSection { get; set; }
 	public List<string> Enemies { get; set; }
+	public string Background { get; set; }
 	public bool IsPlayer { get; set; }
 	public string Ground { get; set; }
 	public string Light { get; set; }
@@ -32,6 +33,7 @@ public class StoryMidBattleEvent
 {
 	public int Turn { get; set; }
 	public string TimelineName { get; set; }
+	public string Background { get; set; }
 	public List<DialogueStep> Steps { get; set; }
 }
 

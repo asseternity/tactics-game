@@ -32,6 +32,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Post_Awakening",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -71,6 +72,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Stealth_Encounter",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -110,6 +112,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Guard_Bribe",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Guard", "Position": "right", "Facing": "Left" },
@@ -157,6 +160,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Post_Backstab",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
@@ -173,6 +177,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Loud_Approach",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -200,6 +205,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Direct_Aftermath",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -237,6 +243,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Boss_Intro",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "center", "Facing": "Right" },
@@ -268,6 +275,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Victory_End",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },

@@ -43,7 +43,7 @@ public static class StoryLoader
 				}
 				else if (ev.Type == "Dialogue")
 				{
-					events.Add(ScriptEvent.Dialogue($"res://dialogic_timelines/{ev.TimelineName}.dtl"));
+					events.Add(ScriptEvent.Dialogue($"res://dialogic_timelines/{ev.TimelineName}.dtl", ev.Background));
 				}
 				else if (ev.Type == "Jump")
 				{
@@ -75,7 +75,7 @@ public static class StoryLoader
 					{
 						foreach (var midEvent in ev.MidBattleEvents)
 						{
-							battle.MidBattleEvents.Add(new MidBattleEvent(midEvent.Turn, $"res://dialogic_timelines/{midEvent.TimelineName}.dtl"));
+							battle.MidBattleEvents.Add(new MidBattleEvent(midEvent.Turn, $"res://dialogic_timelines/{midEvent.TimelineName}.dtl", midEvent.Background));
 						}
 					}
 					

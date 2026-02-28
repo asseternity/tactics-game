@@ -103,10 +103,11 @@ public class ScriptEvent
 	public string TimelinePath;
 	public BattleSetup BattleData;
 	public string ProfileId;
+	public string Background;
 	public string TargetSection;
 	public bool IsPlayer;
 
-	public static ScriptEvent Dialogue(string path) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path };
+	public static ScriptEvent Dialogue(string path, string background = null) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path, Background = background };
 	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
 	public static ScriptEvent AddPartyMember(string profileId, bool isPlayer = false) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId, IsPlayer = isPlayer };
 	public static ScriptEvent JumpToSection(string target) => new ScriptEvent { Type = EventType.JumpToSection, TargetSection = target };
@@ -116,7 +117,13 @@ public struct MidBattleEvent
 {
 	public int Turn;
 	public string TimelinePath;
-	public MidBattleEvent(int turn, string path) { Turn = turn; TimelinePath = path; }
+	public string Background;
+	public MidBattleEvent(int turn, string path, string background = null) 
+	{ 
+		Turn = turn; 
+		TimelinePath = path; 
+		Background = background; 
+	}
 }
 
 // === EQUIPMENT ===

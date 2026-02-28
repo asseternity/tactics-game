@@ -51,6 +51,8 @@ public partial class GameManager : Node3D
 	public TaskCompletionSource<bool> ActiveLevelUpTcs;
 	public TaskCompletionSource<bool> ActiveLootTcs;
 	private Timer _cloudTimer;
+	private CanvasLayer _dialogueBgLayer;
+	private TextureRect _activeDialogueBackground;
 
 	// === GAME DATA ===
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
@@ -246,7 +248,7 @@ public partial class GameManager : Node3D
 		else if (currentEvent.Type == EventType.Dialogue) 
 		{
 			_currentState = State.Cutscene; 
-			StartDialogue(currentEvent.TimelinePath);
+			StartDialogue(currentEvent.TimelinePath, currentEvent.Background);
 		}
 		else if (currentEvent.Type == EventType.Battle) 
 		{
@@ -254,13 +256,23 @@ public partial class GameManager : Node3D
 		}
 	}
 
-	public void StartDialogue(string timelinePath)
+	public void StartDialogue(string timelinePath, string backgroundPath = null)
 	{
 		if (_dialogueActive || _dialogic == null) return;
 		_dialogueActive = true;
 		ShowActions(false);
 		DeselectUnit();
 		if (DimOverlay != null) DimOverlay.Visible = true;
+		
+		if (string.IsNullOrEmpty(backgroundPath))
+		{
+			if (DimOverlay != null) DimOverlay.Visible = true;
+		}
+		else
+		{
+			if (DimOverlay != null) DimOverlay.Visible = false;
+			ShowDialogueBackground(backgroundPath);
+		}
 		
 		StatsLabel.Text = "Dialogue...";
 		_dialogic.Call("start", timelinePath);
@@ -270,6 +282,20 @@ public partial class GameManager : Node3D
 	{
 		_dialogueActive = false;
 		if (DimOverlay != null) DimOverlay.Visible = false;
+		
+		// Shrink the background away with a snappy bounce
+		if (IsInstanceValid(_activeDialogueBackground))
+		{
+			TextureRect bg = _activeDialogueBackground; // Capture reference
+			CanvasLayer layer = _dialogueBgLayer;
+			_activeDialogueBackground = null;
+			_dialogueBgLayer = null;
+
+			Tween t = CreateTween();
+			t.TweenProperty(bg, "scale", new Vector2(0.001f, 0.001f), 0.35f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			t.Finished += () => { bg.QueueFree(); layer?.QueueFree(); };
+		}
 		
 		if (_isMidBattleDialogue)
 		{
@@ -313,6 +339,37 @@ public partial class GameManager : Node3D
 				ShowEmotionEffect(parts[1], parts[2], burstPos);
 			}
 		}
+	}
+	
+	private void ShowDialogueBackground(string path)
+	{
+		Texture2D tex = GD.Load<Texture2D>(path);
+		if (tex == null) return;
+
+		// Layer 0 puts it perfectly ON TOP of the 3D board, but BEHIND Dialogic (which uses Layer 1+)
+		_dialogueBgLayer = new CanvasLayer { Layer = 0 }; 
+		AddChild(_dialogueBgLayer);
+
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+
+		_activeDialogueBackground = new TextureRect
+		{
+			Texture = tex,
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+			CustomMinimumSize = screenSize
+		};
+		
+		_dialogueBgLayer.AddChild(_activeDialogueBackground);
+		
+		_activeDialogueBackground.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		
+		// GAME JUICE: Start at size 0.001 perfectly in the center of the screen
+		_activeDialogueBackground.PivotOffset = screenSize / 2;
+		_activeDialogueBackground.Scale = new Vector2(0.001f, 0.001f);
+
+		CreateTween().TweenProperty(_activeDialogueBackground, "scale", Vector2.One, 0.45f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 	}
 
 	/// <summary>Find the current speaker's portrait and return a screen position for the burst (head/upper portrait area). Returns null if not found or if coords look wrong (e.g. Dialogic in SubViewport).</summary>
@@ -363,7 +420,7 @@ public partial class GameManager : Node3D
 		{
 			_activeMidBattleEvents.Remove(evt);
 			_isMidBattleDialogue = true; 
-			StartDialogue(evt.TimelinePath);
+			StartDialogue(evt.TimelinePath, evt.Background);
 		}
 		else
 		{

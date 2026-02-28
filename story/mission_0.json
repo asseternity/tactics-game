@@ -23,6 +23,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Tutorial_End",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ 
 			  "Action": "Join", 

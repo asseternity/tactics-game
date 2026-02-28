@@ -11,6 +11,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "The_Escape_Plan",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -50,6 +51,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Bridge_Ambush",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -81,6 +83,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Bridge_Aftermath",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -97,6 +100,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Sewer_Descent",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -126,6 +130,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Sewer_Aftermath",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
@@ -142,6 +147,7 @@
 		{
 		  "Type": "Dialogue",
 		  "TimelineName": "Gate_Intro",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
 			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
 			{ "Action": "Join", "Character": "Dougal", "Position": "center", "Facing": "Right" },
