@@ -18,6 +18,9 @@ public partial class GameManager
 
 	private void GenerateGrid()
 	{
+		// JUICE: Make the grid spawn in a wave pattern instead of popping in!
+		Tween spawnTween = CreateTween().SetParallel(true);
+
 		for (int x = 0; x < GridWidth; x++)
 		{
 			for (int z = 0; z < GridDepth; z++)
@@ -25,7 +28,18 @@ public partial class GameManager
 				Tile tile = TileScene.Instantiate<Tile>();
 				AddChild(tile);
 				tile.Setup(new Vector2I(x, z), TileSize);
-				tile.Scale = new Vector3(0.96f, 1.0f, 0.96f); 
+				
+				// Start invisible/tiny
+				tile.Scale = new Vector3(0.001f, 0.001f, 0.001f); 
+				
+				Vector3 targetScale = new Vector3(0.96f, 1.0f, 0.96f);
+				
+				// Calculate a wave delay starting from the corner
+				float delay = (x + z) * 0.03f; 
+				
+				spawnTween.TweenProperty(tile, "scale", targetScale, 0.5f)
+					.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(delay);
+
 				_grid[new Vector2I(x, z)] = tile;
 			}
 		}

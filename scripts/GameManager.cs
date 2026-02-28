@@ -161,7 +161,7 @@ public partial class GameManager : Node3D
 
 	public override void _Process(double delta)
 	{
-		if (_dialogueActive || _levelUpActive) return;
+		if (_dialogueActive || _levelUpActive || _currentState == State.Cutscene || _currentState == State.PartyMenu) return;
 
 		Vector2 mousePos = GetViewport().GetMousePosition();
 		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
@@ -204,6 +204,8 @@ public partial class GameManager : Node3D
 	// === SCRIPT & STORY LOGIC ===
 	private void AdvanceScript()
 	{
+		if (_dialogueActive) return; 
+
 		if (!string.IsNullOrEmpty(_pendingSection))
 		{
 			_currentSection = _pendingSection;
@@ -218,7 +220,8 @@ public partial class GameManager : Node3D
 			// === MISSION COMPLETE LOGIC ===
 			if (_currentMissionIndex < _campaignMissions.Count - 1)
 			{
-				ShowNextMissionScreen(); // Trigger the UI
+				// Enter the cozy camp instead of moving instantly!
+				_ = EnterCampStage(); 
 			}
 			else
 			{
@@ -394,10 +397,11 @@ public partial class GameManager : Node3D
 		_currentTurnNumber = 1;
 		_activeMidBattleEvents.Clear();
 
-		// Automatically heal the party between missions!
 		foreach (var unit in _party) unit.HealBetweenBattles();
 
-		GenerateGrid(); // Assuming this generates a fresh grid
+		// THE FIX: Always clear the board before generating a new one
+		ClearBoard(); 
+		GenerateGrid(); 
 		AdvanceScript();
 	}
 

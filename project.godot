@@ -47,6 +47,7 @@ directories/dtl_directory={
 "Sewer_MidFight": "res://dialogic_timelines/Sewer_MidFight.dtl",
 "Stealth_Encounter": "res://dialogic_timelines/Stealth_Encounter.dtl",
 "The_Escape_Plan": "res://dialogic_timelines/The_Escape_Plan.dtl",
+"Tutorial_End": "res://dialogic_timelines/Tutorial_End.dtl",
 "Victory_End": "res://dialogic_timelines/Victory_End.dtl"
 }
 layout/style_directory={

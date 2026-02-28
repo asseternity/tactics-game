@@ -1,0 +1,43 @@
+{
+  "DefaultFacings": {
+	"Ambrose": "Right",
+	"Dougal": "Right",
+	"Guard": "Left",
+	"Orc": "Center"
+  },
+  "Sections": {
+	"Tutorial_Fight": {
+	  "Events": [
+		{ 
+		  "Type": "AddPartyMember", 
+		  "ProfileId": "Ambrose", 
+		  "IsPlayer": true 
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Guard"],
+		  "Ground": "Grass",
+		  "Light": "Noon",
+		  "ElevationEnabled": true
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Tutorial_End",
+		  "Steps": [
+			{ 
+			  "Action": "Join", 
+			  "Character": "Ambrose", 
+			  "Position": "center", 
+			  "Facing": "Right" 
+			},
+			{ 
+			  "Speaker": "Ambrose", 
+			  "Text": "Well, that was rather easy. Hopefully they aren't all this pathetic.", 
+			  "Emotion": "bravery" 
+			}
+		  ]
+		}
+	  ]
+	}
+  }
+}

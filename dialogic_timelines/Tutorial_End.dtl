@@ -1,0 +1,5 @@
+join Ambrose center
+
+update Ambrose [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Ambrose:bravery"]
+Ambrose: Well, that was rather easy. Hopefully they aren't all this pathetic.
