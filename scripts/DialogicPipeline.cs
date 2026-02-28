@@ -20,19 +20,38 @@ public partial class DialogicPipeline : Node
 	{
 		GD.Print("\n[PIPELINE] Generating Dialogic Files...");
 
-		StoryData data = StoryLoader.GetRawStoryData(ProjectSettings.GlobalizePath("res://story/story_data.json"));
-		
-		if (data == null)
+		CampaignData campaign = StoryLoader.GetCampaignData(ProjectSettings.GlobalizePath("res://story/campaign.json"));
+		if (campaign == null || campaign.Missions == null)
 		{
-			GD.PrintErr("[PIPELINE] ERROR: Could not parse story data.");
+			GD.PrintErr("[PIPELINE] ERROR: Could not parse campaign data.");
 			return;
+		}
+
+		// Create a master container to hold all merged mission data
+		StoryData masterData = new StoryData 
+		{ 
+			Sections = new Dictionary<string, StorySection>(), 
+			DefaultFacings = new Dictionary<string, string>() 
+		};
+
+		// Merge all missions
+		foreach (string missionPath in campaign.Missions)
+		{
+			StoryData missionData = StoryLoader.GetRawStoryData(ProjectSettings.GlobalizePath(missionPath));
+			if (missionData == null) continue;
+
+			if (missionData.Sections != null)
+				foreach (var kvp in missionData.Sections) masterData.Sections[kvp.Key] = kvp.Value;
+			
+			if (missionData.DefaultFacings != null)
+				foreach (var kvp in missionData.DefaultFacings) masterData.DefaultFacings[kvp.Key] = kvp.Value;
 		}
 
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_timelines/"));
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_characters/"));
 
-		BuildInheritanceMap(data);
-		GenerateFiles(data);
+		BuildInheritanceMap(masterData);
+		GenerateFiles(masterData);
 
 		GD.Print("[PIPELINE] Dialogic Generation Complete! Reloading resources...");
 		EditorInterface.Singleton.GetResourceFilesystem().Scan();

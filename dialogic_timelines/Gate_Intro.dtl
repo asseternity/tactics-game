@@ -1,0 +1,25 @@
+join Dougal center
+
+Ambrose: There it is. The perimeter gate. Freedom beckons!
+join Orc right [mirrored="true"]
+
+Orc: Nobody leaves! Boss orders!
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:bravery"]
+Dougal: A blockade. Typical. Draw steel, Ambrose. One last push!
+
+- Let me handle the brute. You take the flank.
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:bravery"]
+	Ambrose: I'll keep the big guy busy. You clear a path!
+	[signal arg="Rel:Dougal:Respect:15"]
+	Dougal: Don't get yourself killed, pretty boy.
+- You take the big one. He's more your type.
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:fear"]
+	Ambrose: He looks like he wants to wrestle. I leave that to you.
+	[signal arg="Rel:Dougal:Respect:-10"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:anger"]
+	Dougal: Coward. Stay out of my way, then.
+

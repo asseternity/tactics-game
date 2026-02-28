@@ -1,0 +1,6 @@
+{
+  "Missions": [
+	"res://story/mission_1.json",
+    "res://story/mission_2.json"
+  ]
+}

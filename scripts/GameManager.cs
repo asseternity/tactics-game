@@ -38,6 +38,8 @@ public partial class GameManager : Node3D
 	// === STATE TRACKING ===
 	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene, PartyMenu }
 	private State _currentState = State.Cutscene;
+	private List<string> _campaignMissions = new();
+	private int _currentMissionIndex = 0;
 	
 	private Tween _uiTween;
 	private bool _dialogueActive = false;
@@ -83,9 +85,6 @@ public partial class GameManager : Node3D
 		ItemDatabase["IronSword"] = new Equipment("IronSword", "Iron Sword", "res://icons/sword.png", EquipSlot.Weapon, bonusDmg: 1);
 		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
 
-		_scriptDatabase = StoryLoader.LoadFromJSON();
-		_currentSection = _scriptDatabase.Keys.First();
-
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
 		EndTurnButton.Pressed += OnEndTurnPressed; 
@@ -94,7 +93,6 @@ public partial class GameManager : Node3D
 
 		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
 		
-		// === THE FIX: Cache the Callables so Godot doesn't lose the C# pointer ===
 		if (_dialogic != null)
 		{
 			_onTimelineEndedCallable = new Callable(this, MethodName.OnTimelineEnded);
@@ -104,13 +102,23 @@ public partial class GameManager : Node3D
 			_dialogic.Connect("signal_event", _onDialogicSignalCallable);
 		}
 		
-		// === THE FIX: Setup a safe Godot Timer for the clouds ===
 		_cloudTimer = new Timer { WaitTime = 3f, Autostart = false, OneShot = true };
 		_cloudTimer.Timeout += StartAmbientCloudSystem;
 		AddChild(_cloudTimer);
 
 		CallDeferred(MethodName.UpdateStatsUI);
-		AdvanceScript();
+
+		// === THE FIX: ONLY load the campaign here! No raw AdvanceScript() calls! ===
+		CampaignData campaign = StoryLoader.GetCampaignData();
+		if (campaign != null && campaign.Missions.Count > 0)
+		{
+			_campaignMissions = campaign.Missions;
+			LoadMission(0); // This handles GenerateGrid() and AdvanceScript() internally!
+		}
+		else
+		{
+			GD.PrintErr("CRITICAL: No campaign data found!");
+		}
 	}
 
 	public override void _ExitTree()
@@ -207,8 +215,16 @@ public partial class GameManager : Node3D
 		
 		if (!_scriptDatabase.ContainsKey(_currentSection) || _currentScriptIndex >= _scriptDatabase[_currentSection].Count)
 		{
-			GD.Print("🎉 GAME OVER! You reached the end of this path!");
-			StatsLabel.Text = "[center][b][wave]YOU WIN![/wave][/b][/center]";
+			// === MISSION COMPLETE LOGIC ===
+			if (_currentMissionIndex < _campaignMissions.Count - 1)
+			{
+				ShowNextMissionScreen(); // Trigger the UI
+			}
+			else
+			{
+				GD.Print("🎉 CAMPAIGN COMPLETE! You reached the end of the game!");
+				StatsLabel.Text = "[center][b][wave]CAMPAIGN WON![/wave][/b][/center]";
+			}
 			return;
 		}
 
@@ -363,5 +379,38 @@ public partial class GameManager : Node3D
 			companion.Relationships[relType] = Mathf.Clamp(companion.Relationships[relType] + amount, 0, 100);
 			ShowRelationshipNotification(charName, relType, amount);
 		}
+	}
+	
+	private void LoadMission(int index)
+	{
+		_currentMissionIndex = index;
+		string missionPath = _campaignMissions[index];
+		GD.Print($"[CAMPAIGN] Loading Mission {index + 1}: {missionPath}");
+
+		_scriptDatabase = StoryLoader.LoadFromJSON(missionPath);
+		_currentSection = _scriptDatabase.Keys.First();
+		_currentScriptIndex = -1;
+		_pendingSection = "";
+		_currentTurnNumber = 1;
+		_activeMidBattleEvents.Clear();
+
+		// Automatically heal the party between missions!
+		foreach (var unit in _party) unit.HealBetweenBattles();
+
+		GenerateGrid(); // Assuming this generates a fresh grid
+		AdvanceScript();
+	}
+
+	private void ClearBoard()
+	{
+		// Destroy physical nodes on the board
+		foreach (var u in _units) if (IsInstanceValid(u)) u.QueueFree();
+		foreach (var o in _obstacles) if (IsInstanceValid(o)) o.QueueFree();
+		foreach (var g in _grid.Values) if (IsInstanceValid(g)) g.QueueFree();
+		
+		_units.Clear();
+		_obstacles.Clear();
+		_grid.Clear();
+		_activeDioramas.Clear();
 	}
 }

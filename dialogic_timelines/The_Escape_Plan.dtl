@@ -1,0 +1,36 @@
+join Ambrose left
+
+join Dougal right [mirrored="true"]
+
+update Ambrose [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Ambrose:fear"]
+Ambrose: Well, we survived the courtyard. But the alarm bells are still ringing.
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:anger"]
+Dougal: They know we're here. The front gates will be locked down tight.
+Ambrose: I'm open to suggestions that don't involve us being skewered.
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:confusion"]
+Dougal: We have two ways out. The old stone bridge to the east, or the drainage sewers below.
+
+- The bridge. I refuse to go into the sewers.
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:sadness"]
+	Ambrose: The bridge. Definitely the bridge. I will not subject my silk shirt to raw sewage.
+	[signal arg="Rel:Dougal:Agreement:-10"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:anger"]
+	Dougal: The bridge is a choke point, you vanity-obsessed fool! Fine, but draw your blade.
+	[signal arg="SetSectionQuietly:Path_Bridge"]
+	jump Bridge_Ambush/
+- The sewers. It's safer.
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:sadness"]
+	Ambrose: As much as it pains me... the sewers offer cover.
+	[signal arg="Rel:Dougal:Agreement:20"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:bravery"]
+	Dougal: A tactical choice. You might have a brain under that hair after all.
+	[signal arg="SetSectionQuietly:Path_Sewers"]
+	jump Sewer_Descent/
+

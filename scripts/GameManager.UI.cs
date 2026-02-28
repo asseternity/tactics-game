@@ -471,4 +471,58 @@ public partial class GameManager
 		t.TweenProperty(panel, "position:x", startX, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 		t.Finished += () => panel.QueueFree();
 	}
+	
+	private void ShowNextMissionScreen()
+	{
+		_currentState = State.Cutscene;
+		ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		Control uiRoot = new Control(); 
+		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
+
+		CenterContainer center = new CenterContainer { Theme = MasterTheme }; 
+		center.SetAnchorsPreset(Control.LayoutPreset.FullRect); 
+		uiRoot.AddChild(center);
+
+		PanelContainer panel = new PanelContainer();
+		panel.AddThemeStyleboxOverride("panel", BaseUIStyle); 
+		center.AddChild(panel);
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; 
+		vbox.AddThemeConstantOverride("separation", 20); 
+		panel.AddChild(vbox);
+
+		Label title = new Label { Text = "MISSION COMPLETE", HorizontalAlignment = HorizontalAlignment.Center }; 
+		title.AddThemeFontSizeOverride("font_size", 40); 
+		title.AddThemeColorOverride("font_color", new Color(0.4f, 1f, 0.5f)); 
+		vbox.AddChild(title);
+
+		Label subtitle = new Label { Text = "The party rests and recovers some HP.", HorizontalAlignment = HorizontalAlignment.Center };
+		subtitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		vbox.AddChild(subtitle);
+
+		Button nextBtn = new Button { Text = "Start Next Mission", CustomMinimumSize = new Vector2(250, 60) }; 
+		AddButtonJuice(nextBtn); 
+		vbox.AddChild(nextBtn);
+
+		// Entrance Animation
+		panel.PivotOffset = new Vector2(200, 100); // Approximate center
+		panel.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		nextBtn.Pressed += () => {
+			Tween outTween = CreateTween();
+			outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outTween.Finished += () => {
+				uiRoot.QueueFree();
+				if (DimOverlay != null) DimOverlay.Visible = false;
+				
+				// Clean up the old board and load the next JSON!
+				ClearBoard();
+				LoadMission(_currentMissionIndex + 1);
+			};
+		};
+	}
 }

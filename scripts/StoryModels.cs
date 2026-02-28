@@ -1,5 +1,10 @@
 using System.Collections.Generic;
 
+public class CampaignData
+{
+	public System.Collections.Generic.List<string> Missions { get; set; }
+}
+
 public class StoryData
 {
 	public Dictionary<string, StorySection> Sections { get; set; }

@@ -1,0 +1,9 @@
+update Ambrose [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Ambrose:sadness"]
+Ambrose: The smell... It's like a tavern floor on a Sunday morning.
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:fear"]
+Dougal: Quiet. The acoustics down here carry sound. We aren't alone.
+join Guard center [mirrored="true"]
+
+Guard: Who's there? I got a crossbow pointed in the dark!

@@ -5,26 +5,28 @@ using System.Text.Json;
 
 public static class StoryLoader
 {
-	// Helper to deserialize the JSON cleanly for both the runtime and the pipeline tool
-	public static StoryData GetRawStoryData(string jsonPath = "res://story/story_data.json")
+	public static CampaignData GetCampaignData(string jsonPath = "res://story/campaign.json")
+	{
+		if (!FileAccess.FileExists(jsonPath)) return null;
+		using var file = FileAccess.Open(jsonPath, FileAccess.ModeFlags.Read);
+		return JsonSerializer.Deserialize<CampaignData>(file.GetAsText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+	}
+	
+	public static StoryData GetRawStoryData(string jsonPath)
 	{
 		if (!FileAccess.FileExists(jsonPath))
 		{
 			GD.PrintErr($"[ERROR] Could not find {jsonPath}");
 			return null;
 		}
-
 		using var file = FileAccess.Open(jsonPath, FileAccess.ModeFlags.Read);
-		string jsonString = file.GetAsText();
-
-		var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-		return JsonSerializer.Deserialize<StoryData>(jsonString, options);
+		return JsonSerializer.Deserialize<StoryData>(file.GetAsText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 	}
 
-	public static Dictionary<string, List<ScriptEvent>> LoadFromJSON()
+	public static Dictionary<string, List<ScriptEvent>> LoadFromJSON(string jsonPath)
 	{
 		var scriptDatabase = new Dictionary<string, List<ScriptEvent>>();
-		StoryData data = GetRawStoryData();
+		StoryData data = GetRawStoryData(jsonPath);
 		
 		if (data == null) return scriptDatabase;
 

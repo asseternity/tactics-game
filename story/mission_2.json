@@ -1,0 +1,207 @@
+{
+  "DefaultFacings": {
+	"Ambrose": "Right",
+	"Dougal": "Right",
+	"Guard": "Right",
+	"Orc": "Center"
+  },
+  "Sections": {
+	"Mission2_Start": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "The_Escape_Plan",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "Well, we survived the courtyard. But the alarm bells are still ringing.", "Emotion": "fear" },
+			{ "Speaker": "Dougal", "Text": "They know we're here. The front gates will be locked down tight.", "Emotion": "anger" },
+			{ "Speaker": "Ambrose", "Text": "I'm open to suggestions that don't involve us being skewered." },
+			{ "Speaker": "Dougal", "Text": "We have two ways out. The old stone bridge to the east, or the drainage sewers below.", "Emotion": "confusion" },
+			{
+			  "Choices": [
+				{
+				  "Text": "The bridge. I refuse to go into the sewers.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "The bridge. Definitely the bridge. I will not subject my silk shirt to raw sewage.", "Emotion": "sadness" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-10" },
+					{ "Speaker": "Dougal", "Text": "The bridge is a choke point, you vanity-obsessed fool! Fine, but draw your blade.", "Emotion": "anger" },
+					{ "Action": "Signal", "Value": "JumpTo:Path_Bridge" }
+				  ]
+				},
+				{
+				  "Text": "The sewers. It's safer.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "As much as it pains me... the sewers offer cover.", "Emotion": "sadness" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
+					{ "Speaker": "Dougal", "Text": "A tactical choice. You might have a brain under that hair after all.", "Emotion": "bravery" },
+					{ "Action": "Signal", "Value": "JumpTo:Path_Sewers" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		}
+	  ]
+	},
+
+	"Path_Bridge": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Bridge_Ambush",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "See? The fresh air is lovely. A bit breezy, but manageable." },
+			{ "Action": "Join", "Character": "Orc", "Position": "center", "Facing": "Left" },
+			{ "Speaker": "Orc", "Text": "Puny men not cross bridge! Boss says smash!" },
+			{ "Speaker": "Dougal", "Text": "I told you it was a choke point! Brace yourself!", "Emotion": "fear" }
+		  ]
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Orc", "Orc"],
+		  "Ground": "Marble",
+		  "Light": "Morning",
+		  "ElevationEnabled": false,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 2,
+			  "TimelineName": "Bridge_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+				{ "Speaker": "Ambrose", "Text": "Two of them?! This feels excessive!" },
+				{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+				{ "Speaker": "Dougal", "Text": "Aim for the knees, you idiot! Bring them down to our level!" }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Bridge_Aftermath",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "My arms are going to be sore for a week.", "Emotion": "sadness" },
+			{ "Speaker": "Dougal", "Text": "We broke through. Let's keep moving before reinforcements arrive." },
+			{ "Action": "Signal", "Value": "JumpTo:Final_Gate" }
+		  ]
+		}
+	  ]
+	},
+
+	"Path_Sewers": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Sewer_Descent",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "The smell... It's like a tavern floor on a Sunday morning.", "Emotion": "sadness" },
+			{ "Speaker": "Dougal", "Text": "Quiet. The acoustics down here carry sound. We aren't alone.", "Emotion": "fear" },
+			{ "Action": "Join", "Character": "Guard", "Position": "center", "Facing": "Left" },
+			{ "Speaker": "Guard", "Text": "Who's there? I got a crossbow pointed in the dark!" }
+		  ]
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Guard", "Guard"],
+		  "Ground": "Dirt",
+		  "Light": "Night",
+		  "ElevationEnabled": true,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 3,
+			  "TimelineName": "Sewer_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+				{ "Speaker": "Dougal", "Text": "Watch your footing in the muck! Use the elevation!" }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Sewer_Aftermath",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "I'm burning these clothes as soon as we're out of here." },
+			{ "Speaker": "Dougal", "Text": "You're alive to complain about it. The exit grate is just ahead." },
+			{ "Action": "Signal", "Value": "JumpTo:Final_Gate" }
+		  ]
+		}
+	  ]
+	},
+
+	"Final_Gate": {
+	  "Events": [
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Gate_Intro",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "center", "Facing": "Right" },
+			{ "Speaker": "Ambrose", "Text": "There it is. The perimeter gate. Freedom beckons!" },
+			{ "Action": "Join", "Character": "Orc", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Orc", "Text": "Nobody leaves! Boss orders!" },
+			{ "Speaker": "Dougal", "Text": "A blockade. Typical. Draw steel, Ambrose. One last push!", "Emotion": "bravery" },
+			{
+			  "Choices": [
+				{
+				  "Text": "Let me handle the brute. You take the flank.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "I'll keep the big guy busy. You clear a path!", "Emotion": "bravery" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:15" },
+					{ "Speaker": "Dougal", "Text": "Don't get yourself killed, pretty boy." }
+				  ]
+				},
+				{
+				  "Text": "You take the big one. He's more your type.",
+				  "Steps": [
+					{ "Speaker": "Ambrose", "Text": "He looks like he wants to wrestle. I leave that to you.", "Emotion": "fear" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:-10" },
+					{ "Speaker": "Dougal", "Text": "Coward. Stay out of my way, then.", "Emotion": "anger" }
+				  ]
+				}
+			  ]
+			}
+		  ]
+		},
+		{ 
+		  "Type": "Battle", 
+		  "Enemies": ["Orc", "Guard", "Guard"],
+		  "Ground": "Grass",
+		  "Light": "Noon",
+		  "ElevationEnabled": true,
+		  "MidBattleEvents": [
+			{
+			  "Turn": 3,
+			  "TimelineName": "Gate_MidFight",
+			  "Steps": [
+				{ "Action": "Join", "Character": "Guard", "Position": "right", "Facing": "Left" },
+				{ "Speaker": "Guard", "Text": "Don't let them reach the treeline!" },
+				{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+				{ "Speaker": "Ambrose", "Text": "I'm trying, but you keep standing in my way!" }
+			  ]
+			}
+		  ]
+		},
+		{
+		  "Type": "Dialogue",
+		  "TimelineName": "Mission2_End",
+		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
+			{ "Speaker": "Dougal", "Text": "We're clear. Into the forest, now!" },
+			{ "Speaker": "Ambrose", "Text": "Finally. Let's hope the local fauna is friendlier than the guards." },
+			{ "Speaker": "Dougal", "Text": "Keep your guard up. We still have a long walk to the safehouse." }
+		  ]
+		}
+	  ]
+	}
+  }
+}
