@@ -1,8 +1,0 @@
-join Ambrose left
-
-join Dougal right [mirrored="true"]
-
-Ambrose: I'm burning these clothes as soon as we're out of here.
-Dougal: You're alive to complain about it. The exit grate is just ahead.
-[signal arg="SetSectionQuietly:Final_Gate"]
-jump Gate_Intro/

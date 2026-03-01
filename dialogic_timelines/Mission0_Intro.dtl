@@ -1,0 +1,41 @@
+join Ambrose 1
+
+join Dougal 3 [mirrored="true"]
+
+update Ambrose [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Ambrose:bravery"]
+Ambrose: Well, that was dreadfully impolite. A Magister's dockwatch lacks all sense of Minrathous hospitality.
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:anger"]
+Dougal: They're Venatori on a payroll, Ambrose. They ain't here to pour you wine.
+join Guard 2 [mirrored="true"]
+
+update Guard [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Guard:fear"]
+Guard: Maker's breath... please! I yield! The Magister didn't pay us enough to die to a pair of alley rats!
+
+- We don't leave loose ends. Finish him, Dougal.
+	[signal arg="SetFlag:KilledDockGuard"]
+	[signal arg="Rel:Dougal:Agreement:10"]
+	[signal arg="Rel:Dougal:Respect:15"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:bravery"]
+	Dougal: Pragmatic. I like it. No witnesses to warn the estate.
+	leave Guard
+
+- Run along, friend. And reconsider your choice of employer.
+	[signal arg="SetFlag:SparedDockGuard"]
+	[signal arg="Rel:Dougal:Agreement:-20"]
+	update Guard [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Guard:bravery"]
+	Guard: Thank you! Thank you! You'll never see me again!
+	leave Guard
+
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:anger"]
+	Dougal: You're a fool, Ambrose. A suave fool, but a fool. That rat's going to squeal.
+
+if StoryBridge.HasFlag("SparedDockGuard") == true:
+	Ambrose: Relax, Dougal. A little mercy buys us good karma. Now, let's hit the Magister's vault before sunrise.
+else:
+	Ambrose: A shame, but necessary. Now, let's relieve this Magister of his prized artifact before the sun comes up.

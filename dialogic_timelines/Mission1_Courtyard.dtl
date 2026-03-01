@@ -1,0 +1,39 @@
+join Ambrose 1
+
+join Dougal 3 [mirrored="true"]
+
+Dougal: Ogre mercenaries. The Magister is pulling out all the stops. We're getting close to the inner sanctum.
+if StoryBridge.HasFlag("SparedDockGuard") == true:
+	join Guard 2 [mirrored="true"]
+
+	update Guard [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Guard:anger"]
+	Guard: Intruders! It's them! Just like the dock-watch reported! Sound the alarm!
+	[signal arg="Rel:Dougal:Agreement:-15"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:anger"]
+	Dougal: See, Ambrose?! What did I tell you about loose ends!
+	leave Guard
+
+else:
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:bravery"]
+	Ambrose: Quiet as a whisper. See, Dougal? Clearing out the docks paid off. They have no idea we're in the courtyard.
+	[signal arg="Rel:Dougal:Respect:10"]
+Ambrose: Alright, the entrance to the artifact vault is just ahead. It's guarded by the Magister's elite.
+
+- I'll use my Venatori disguise to bribe our way past.
+	[signal arg="SetFlag:BribedVaultGuards"]
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:bravery"]
+	Ambrose: A few gold sovereigns can open doors that swords cannot. Follow my lead.
+	[signal arg="SetSectionQuietly:VaultEntry_Sneak"]
+	jump Mission1_Sneak/
+- Dougal, kick the doors in. We take them by surprise.
+	[signal arg="SetFlag:AssaultedVault"]
+	[signal arg="Rel:Dougal:Agreement:20"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:bravery"]
+	Dougal: Now you're speaking my language.
+	[signal arg="JumpTo:VaultEntry_Loud"]
+

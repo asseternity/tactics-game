@@ -254,31 +254,41 @@ public partial class Unit : Node3D
 		if (Data.CurrentHP < 0) Data.CurrentHP = 0;
 		UpdateVisuals();
 
+		// JUICE: Trigger hit sparks!
+		if (dmg > 0) SpawnHitParticles();
+
 		if (Data.CurrentHP <= 0)
 		{
-			// 1. Await the death shrink animation first
+			// JUICE: Squash down flat before popping out of existence!
 			Tween deathTween = CreateTween();
-			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.25f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+			
+			// Squash wide and flat
+			deathTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.5f, baseScale.Y * 0.2f, baseScale.Z), 0.15f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			
+			// Shrink into nothingness
+			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.15f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			
 			await ToSignal(deathTween, Tween.SignalName.Finished);
+			
+			// JUICE: Trigger the massive death poof exactly as the unit vanishes
+			SpawnDeathParticles();
 			
 			Visible = false; // Hide completely so they don't block the camera
 
 			if (attacker != null && !this.IsFriendly)
 			{
-				// 2. Roll for loot FIRST (pauses if an item drops)
 				await GameManager.Instance.RollForLoot();
-				
-				// 3. Give XP SECOND (pauses if they level up)
 				await attacker.GainXP(this.Data.XPReward);
 			}
 
-			// 4. Finally, announce the death to resolve the battle or remove the unit
 			OnDied?.Invoke(this);
 			QueueFree();
 		}
 	}
 
-	// (rest of file unchanged: GainXP, MoveTo, SetSelected, NewTurn, SetTargetable, etc.)
 	public async Task GainXP(int amount)
 	{
 		if (!IsFriendly) return;
@@ -447,6 +457,84 @@ public partial class Unit : Node3D
 
 			await ToSignal(landTween, Tween.SignalName.Finished);
 		}
+	}
+	
+	private void SpawnHitParticles()
+	{
+		CpuParticles3D particles = new CpuParticles3D {
+			Emitting = false,
+			OneShot = true,
+			Explosiveness = 0.9f, // All particles burst at once
+			Amount = 12,
+			Lifetime = 0.5f,
+			Position = new Vector3(0, 1.2f, 0) // Centered on the sprite's chest/head
+		};
+
+		// Make them look like little cartoony 2D impact sparks
+		particles.Mesh = new BoxMesh { Size = new Vector3(0.15f, 0.15f, 0.15f) };
+		particles.MaterialOverride = new StandardMaterial3D {
+			AlbedoColor = new Color(1f, 0.9f, 0.2f), // Flashy yellow
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, // No shadows!
+			NoDepthTest = true // Always draw on top
+		};
+
+		// Physics: Explode upwards and outwards
+		particles.Direction = new Vector3(0, 1, 0);
+		particles.Spread = 90f;
+		particles.InitialVelocityMin = 4f;
+		particles.InitialVelocityMax = 8f;
+		particles.Gravity = new Vector3(0, -15f, 0); // Heavy gravity snaps them down
+
+		// Shrink to zero over their lifetime
+		Curve scaleCurve = new Curve();
+		scaleCurve.AddPoint(new Vector2(0, 1));
+		scaleCurve.AddPoint(new Vector2(1, 0));
+		particles.ScaleAmountCurve = scaleCurve;
+
+		AddChild(particles);
+		particles.Emitting = true;
+
+		// Clean up the node after the animation finishes
+		GetTree().CreateTimer(0.6f).Timeout += () => particles.QueueFree();
+	}
+
+	private void SpawnDeathParticles()
+	{
+		CpuParticles3D particles = new CpuParticles3D {
+			Emitting = false,
+			OneShot = true,
+			Explosiveness = 1.0f,
+			Amount = 25,
+			Lifetime = 1.0f
+		};
+
+		// Soft, cartoony poof clouds
+		particles.Mesh = new SphereMesh { Radius = 0.25f, Height = 0.5f };
+		particles.MaterialOverride = new StandardMaterial3D {
+			AlbedoColor = IsFriendly ? new Color(0.2f, 0.5f, 1f) : new Color(0.8f, 0.2f, 0.2f), // Blue for friends, Red for enemies
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded
+		};
+
+		// Physics: 360-degree burst
+		particles.Direction = new Vector3(0, 1, 0);
+		particles.Spread = 180f; 
+		particles.InitialVelocityMin = 5f;
+		particles.InitialVelocityMax = 10f;
+		particles.Gravity = new Vector3(0, -12f, 0); 
+
+		Curve scaleCurve = new Curve();
+		scaleCurve.AddPoint(new Vector2(0, 1));
+		scaleCurve.AddPoint(new Vector2(0.7f, 0.8f)); // Hold shape...
+		scaleCurve.AddPoint(new Vector2(1, 0));       // ...then shrink fast at the end
+		particles.ScaleAmountCurve = scaleCurve;
+
+		// CRITICAL: We parent this to the WORLD (GameManager), not the Unit!
+		// Otherwise, when the Unit is destroyed, the particles will instantly vanish.
+		GetParent().AddChild(particles);
+		particles.GlobalPosition = this.GlobalPosition + new Vector3(0, 1f, 0);
+		
+		particles.Emitting = true;
+		GetTree().CreateTimer(1.2f).Timeout += () => particles.QueueFree();
 	}
 
 	public void SetSelected(bool selected) { IsSelected = selected; UpdateVisuals(); }

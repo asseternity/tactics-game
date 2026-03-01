@@ -1,0 +1,9 @@
+join Guard 3 [mirrored="true"]
+
+Ambrose: Good evening, captain. The Magister sent us to audit the lyrium reserves. Here is your... handling fee.
+update Guard [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Guard:confusion"]
+Guard: I... uh... alright. But make it quick. If the Magister finds you down here...
+leave Guard
+
+Dougal: I can't believe that actually worked. Let's grab the idol and get out of here.

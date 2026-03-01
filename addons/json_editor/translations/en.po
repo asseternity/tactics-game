@@ -1,0 +1,66 @@
+# English Translation
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "JSON Editor - Excel Style Table Test"
+msgstr "JSON Editor - Excel Style Table Test"
+
+
+
+msgid "Test data loaded"
+msgstr "Test data loaded"
+
+msgid "Switch to English"
+msgstr "Switch to English"
+
+msgid "Switch to Chinese"
+msgstr "Switch to Chinese"
+
+msgid "Enter JSON data"
+msgstr "Enter JSON data"
+
+msgid "tree_view"
+msgstr "Tree View"
+
+msgid "table_view"
+msgstr "Table View"
+
+msgid "tree_view_with_edit"
+msgstr "Tree View (Double-click to edit):"
+
+msgid "excel_style_table_view"
+msgstr "Excel Style Table View:"
+
+msgid "add_row"
+msgstr "Add Row"
+
+msgid "key"
+msgstr "Key"
+
+msgid "value"
+msgstr "Value"
+
+msgid "load"
+msgstr "Load"
+
+msgid "save"
+msgstr "Save"
+
+msgid "browse"
+msgstr "Browse..."
+
+msgid "file_path"
+msgstr "File Path"
+
+msgid "language"
+msgstr "Language"
+
+msgid "json_text"
+msgstr "JSON Text"
+
+msgid "enter_json_file_path"
+msgstr "Enter JSON file path..."
+
+msgid "test_data_loaded"
+msgstr "Test data loaded" 

@@ -1,7 +1,0 @@
-Ambrose: See? The fresh air is lovely. A bit breezy, but manageable.
-join Orc center [mirrored="true"]
-
-Orc: Puny men not cross bridge! Boss says smash!
-update Dougal [animation="Bounce" length="0.4" wait="true"]
-[signal arg="Emotion:Dougal:fear"]
-Dougal: I told you it was a choke point! Brace yourself!

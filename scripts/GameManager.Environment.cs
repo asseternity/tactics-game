@@ -320,29 +320,99 @@ public partial class GameManager
 		
 		SpawnProceduralCloud();
 		
-		// Restart the timer with a new random duration for the next cloud
 		if (_cloudTimer != null && IsInstanceValid(_cloudTimer))
 		{
-			_cloudTimer.WaitTime = (float)GD.RandRange(3.0f, 8.0f);
+			// Shorter wait time for regular, steady, one-by-one spawning
+			_cloudTimer.WaitTime = (float)GD.RandRange(1.0f, 2.5f);
 			_cloudTimer.Start();
 		}
 	}
 
 	private void SpawnProceduralCloud()
 	{
-		MeshInstance3D cloud = new MeshInstance3D();
-		cloud.Mesh = new SphereMesh { Radius = (float)GD.RandRange(3.0f, 6.0f), Height = (float)GD.RandRange(1.5f, 2.5f) };
-		cloud.MaterialOverride = new StandardMaterial3D { AlbedoColor = new Color(1f, 1f, 1f, 0.4f), Transparency = BaseMaterial3D.TransparencyEnum.Alpha, Roughness = 1.0f, DistanceFadeMode = BaseMaterial3D.DistanceFadeModeEnum.PixelAlpha, DistanceFadeMaxDistance = 15f, DistanceFadeMinDistance = 5f };
-		cloud.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+		// 1. PATH MATH: Calculate left-to-right relative to the CAMERA, not the world grid
+		Vector3 camRight = Cam.GlobalTransform.Basis.X;
+		camRight.Y = 0; // Keep the flight path perfectly flat
+		camRight = camRight.Normalized();
 		
-		float startX = -15f; float endX = (GridWidth * TileSize) + 25f;
-		cloud.Position = new Vector3(startX, (float)GD.RandRange(12f, 18f), (float)GD.RandRange(-5f, (GridDepth * TileSize) + 5f));
-		cloud.RotationDegrees = new Vector3(0, (float)GD.RandRange(0, 360), 0);
-		AddChild(cloud);
+		// Pick a random spot floating somewhere over the grid to act as the "center" of our path
+		Vector3 midPoint = new Vector3(
+			(float)GD.RandRange(0f, GridWidth * TileSize),
+			(float)GD.RandRange(2.0f, 4.5f),
+			(float)GD.RandRange(0f, GridDepth * TileSize)
+		);
+		
+		// Create a flight path that spans across the screen
+		float travelDist = 45f; 
+		Vector3 startPos = midPoint - (camRight * (travelDist / 2f)); // Way off-screen left
+		Vector3 endPos = midPoint + (camRight * (travelDist / 2f));   // Way off-screen right
 
-		Tween cloudTween = CreateTween();
-		cloudTween.TweenProperty(cloud, "position:x", endX, (float)GD.RandRange(25f, 45f)).SetTrans(Tween.TransitionType.Linear);
-		cloudTween.Finished += () => cloud.QueueFree();
+		// 2. THE PARENT (Handles the linear left-to-right travel)
+		Node3D gustParent = new Node3D();
+		gustParent.Position = startPos;
+		AddChild(gustParent);
+
+		// 3. THE MESH (Handles the shape, look, and swiveling)
+		MeshInstance3D windGust = new MeshInstance3D();
+		windGust.Mesh = new SphereMesh { Radius = 1.0f, Height = 1.0f }; 
+		
+		windGust.MaterialOverride = new StandardMaterial3D { 
+			AlbedoColor = new Color(1f, 1f, 1f, 0.35f),
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+			NoDepthTest = true, // THE FIX: This forces the cloud to draw ON TOP of all 3D objects!
+			RenderPriority = 1, // Ensures it draws after standard elements
+			DistanceFadeMode = BaseMaterial3D.DistanceFadeModeEnum.PixelAlpha, 
+			DistanceFadeMaxDistance = 15f, 
+			DistanceFadeMinDistance = 5f 
+		};
+		windGust.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+		
+		windGust.RotationDegrees = new Vector3(0, (float)GD.RandRange(-30, 30), (float)GD.RandRange(-15, 15));
+		gustParent.AddChild(windGust);
+
+		// 4. SLOW, LAZY MOVEMENT TWEEN
+		float duration = (float)GD.RandRange(12f, 20f);
+		Tween moveTween = CreateTween().SetParallel(true);
+		
+		// Move the PARENT from startPos to endPos across the screen
+		moveTween.TweenProperty(gustParent, "position", endPos, duration)
+			.SetTrans(Tween.TransitionType.Linear);
+			
+		// Sine wave on the CHILD'S local Z and Y for a bobbing feel (so it doesn't fight the parent's movement)
+		moveTween.TweenProperty(windGust, "position:z", (float)GD.RandRange(-3f, 3f), duration)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		moveTween.TweenProperty(windGust, "position:y", (float)GD.RandRange(-1.5f, 1.5f), duration)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		// Smoothly fade/scale in and out
+		gustParent.Scale = Vector3.Zero;
+		moveTween.TweenProperty(gustParent, "scale", Vector3.One, 2.0f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		moveTween.TweenProperty(gustParent, "scale", Vector3.Zero, 2.0f)
+			.SetDelay(duration - 2.0f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+
+		// 5. INFINITE MORPHING TWEEN
+		Tween shapeTween = CreateTween().SetLoops(); 
+		float morphSpeed = duration / 3f; 
+		
+		Vector3 morphScale1 = new Vector3((float)GD.RandRange(3.0f, 5.0f), (float)GD.RandRange(0.2f, 0.5f), (float)GD.RandRange(1.0f, 2.0f));
+		Vector3 morphScale2 = new Vector3((float)GD.RandRange(2.0f, 3.5f), (float)GD.RandRange(0.4f, 0.8f), (float)GD.RandRange(1.5f, 3.0f));
+		
+		Vector3 rot1 = windGust.RotationDegrees + new Vector3((float)GD.RandRange(-20, 20), (float)GD.RandRange(-45, 45), (float)GD.RandRange(-10, 10));
+		Vector3 rot2 = windGust.RotationDegrees + new Vector3((float)GD.RandRange(-20, 20), (float)GD.RandRange(-45, 45), (float)GD.RandRange(-10, 10));
+
+		shapeTween.TweenProperty(windGust, "scale", morphScale1, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		shapeTween.Parallel().TweenProperty(windGust, "rotation_degrees", rot1, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		
+		shapeTween.TweenProperty(windGust, "scale", morphScale2, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		shapeTween.Parallel().TweenProperty(windGust, "rotation_degrees", rot2, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		moveTween.Finished += () => {
+			shapeTween.Kill(); 
+			gustParent.QueueFree();
+		};
 	}
 
 	private void SpawnRandomObstacles(int obstacleCount)

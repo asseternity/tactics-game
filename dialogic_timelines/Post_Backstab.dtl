@@ -1,8 +1,0 @@
-join Dougal right [mirrored="true"]
-
-join Ambrose left
-
-Dougal: Messy, but effective. The captain is just ahead.
-Ambrose: Lead the way, my delightfully violent friend.
-[signal arg="SetSectionQuietly:Boss_Fight"]
-jump Boss_Intro/

@@ -40,6 +40,7 @@ public partial class GameManager : Node3D
 	private State _currentState = State.Cutscene;
 	private List<string> _campaignMissions = new();
 	private int _currentMissionIndex = 0;
+	public System.Collections.Generic.Dictionary<string, bool> StoryFlags = new();
 	
 	private Tween _uiTween;
 	private bool _dialogueActive = false;
@@ -107,6 +108,7 @@ public partial class GameManager : Node3D
 		_cloudTimer = new Timer { WaitTime = 3f, Autostart = false, OneShot = true };
 		_cloudTimer.Timeout += StartAmbientCloudSystem;
 		AddChild(_cloudTimer);
+		StartAmbientCloudSystem();
 
 		CallDeferred(MethodName.UpdateStatsUI);
 
@@ -191,7 +193,6 @@ public partial class GameManager : Node3D
 			newPos.Z = Mathf.Clamp(newPos.Z, _initialCamPos.Z - limitUp, _initialCamPos.Z + limitDown);
 
 			Cam.GlobalPosition = newPos;
-			StartAmbientCloudSystem();
 		}
 	}
 
@@ -304,10 +305,25 @@ public partial class GameManager : Node3D
 		}
 		else AdvanceScript(); 
 	}
+	
+	public bool HasFlag(string flagName)
+	{
+		return StoryFlags.TryGetValue(flagName, out bool val) && val;
+	}
+
+	// Called by Dialogic's if statements!
+	public int GetRelationship(string charName, string relType)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName);
+		if (companion != null && companion.Relationships.ContainsKey(relType))
+			return companion.Relationships[relType];
+		return 0; // Return 0 if they haven't joined or the stat doesn't exist
+	}
 
 	private void OnDialogicSignal(string argument)
 	{
 		if (string.IsNullOrEmpty(argument)) return;
+		
 		if (argument.StartsWith("JumpTo:")) 
 		{
 			_pendingSection = argument.Split(":")[1];
@@ -320,7 +336,6 @@ public partial class GameManager : Node3D
 				_currentSection = parts[1];
 				_currentScriptIndex = 0;
 			}
-			// Next timeline_ended will be when the jumped-to timeline (e.g. Loud_Approach) ends — we AdvanceScript() then.
 		}
 		else if (argument.StartsWith("Rel:"))
 		{
@@ -338,6 +353,12 @@ public partial class GameManager : Node3D
 				Vector2? burstPos = GetDialogicPortraitBurstScreenPosition(parts[1]);
 				ShowEmotionEffect(parts[1], parts[2], burstPos);
 			}
+		}
+		// === NEW: Catch the flag and save it to memory! ===
+		else if (argument.StartsWith("SetFlag:"))
+		{
+			string flagName = argument.Split(':')[1];
+			StoryFlags[flagName] = true;
 		}
 	}
 	
@@ -447,7 +468,7 @@ public partial class GameManager : Node3D
 		string missionPath = _campaignMissions[index];
 		GD.Print($"[CAMPAIGN] Loading Mission {index + 1}: {missionPath}");
 
-		_scriptDatabase = StoryLoader.LoadFromJSON(missionPath);
+		_scriptDatabase = StoryLoader.LoadScriptDatabase(missionPath);
 		_currentSection = _scriptDatabase.Keys.First();
 		_currentScriptIndex = -1;
 		_pendingSection = "";

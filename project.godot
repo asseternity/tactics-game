@@ -17,6 +17,7 @@ config/features=PackedStringArray("4.5", "C#", "Forward Plus")
 [autoload]
 
 Dialogic="*res://addons/dialogic/Core/DialogicGameHandler.gd"
+StoryBridge="*res://scripts/StoryBridge.cs"
 
 [dialogic]
 
@@ -27,28 +28,13 @@ directories/dch_directory={
 "Orc": "res://dialogic_characters/Orc.dch"
 }
 directories/dtl_directory={
-"Awake_MidFight": "res://dialogic_timelines/Awake_MidFight.dtl",
-"Boss_Intro": "res://dialogic_timelines/Boss_Intro.dtl",
-"Boss_MidFight": "res://dialogic_timelines/Boss_MidFight.dtl",
-"Bridge_Aftermath": "res://dialogic_timelines/Bridge_Aftermath.dtl",
-"Bridge_Ambush": "res://dialogic_timelines/Bridge_Ambush.dtl",
-"Bridge_MidFight": "res://dialogic_timelines/Bridge_MidFight.dtl",
-"Direct_Aftermath": "res://dialogic_timelines/Direct_Aftermath.dtl",
-"Direct_MidFight": "res://dialogic_timelines/Direct_MidFight.dtl",
-"Gate_Intro": "res://dialogic_timelines/Gate_Intro.dtl",
-"Gate_MidFight": "res://dialogic_timelines/Gate_MidFight.dtl",
-"Guard_Bribe": "res://dialogic_timelines/Guard_Bribe.dtl",
-"Loud_Approach": "res://dialogic_timelines/Loud_Approach.dtl",
-"Mission2_End": "res://dialogic_timelines/Mission2_End.dtl",
-"Post_Awakening": "res://dialogic_timelines/Post_Awakening.dtl",
-"Post_Backstab": "res://dialogic_timelines/Post_Backstab.dtl",
-"Sewer_Aftermath": "res://dialogic_timelines/Sewer_Aftermath.dtl",
-"Sewer_Descent": "res://dialogic_timelines/Sewer_Descent.dtl",
-"Sewer_MidFight": "res://dialogic_timelines/Sewer_MidFight.dtl",
-"Stealth_Encounter": "res://dialogic_timelines/Stealth_Encounter.dtl",
-"The_Escape_Plan": "res://dialogic_timelines/The_Escape_Plan.dtl",
-"Tutorial_End": "res://dialogic_timelines/Tutorial_End.dtl",
-"Victory_End": "res://dialogic_timelines/Victory_End.dtl"
+"MidBattle_OrcTaunt": "res://dialogic_timelines/MidBattle_OrcTaunt.dtl",
+"Mission0_Intro": "res://dialogic_timelines/Mission0_Intro.dtl",
+"Mission1_Courtyard": "res://dialogic_timelines/Mission1_Courtyard.dtl",
+"Mission1_LoudPostBattle": "res://dialogic_timelines/Mission1_LoudPostBattle.dtl",
+"Mission1_Sneak": "res://dialogic_timelines/Mission1_Sneak.dtl",
+"Mission2_Conclusion": "res://dialogic_timelines/Mission2_Conclusion.dtl",
+"Mission2_TheArtifact": "res://dialogic_timelines/Mission2_TheArtifact.dtl"
 }
 layout/style_directory={
 "": "res://dialogic_styles/Default.tres",
@@ -103,7 +89,7 @@ project/assembly_name="TacticsGame"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/dialogic/plugin.cfg")
+enabled=PackedStringArray("res://addons/dialogic/plugin.cfg", "res://addons/json_editor/plugin.cfg")
 
 [input]
 

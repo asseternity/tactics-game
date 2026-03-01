@@ -1,210 +1,219 @@
 {
-  "DefaultFacings": {
-	"Ambrose": "Right",
-	"Dougal": "Right",
-	"Guard": "Right",
-	"Orc": "Center"
-  },
   "Sections": {
-	"Mission2_Start": {
+	"Start": {
 	  "Events": [
 		{
-		  "Type": "Dialogue",
-		  "TimelineName": "The_Escape_Plan",
-		  "Background": "res://assets/background1.jpg",
-		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Ambrose", "Text": "Well, we survived the courtyard. But the alarm bells are still ringing.", "Emotion": "fear" },
-			{ "Speaker": "Dougal", "Text": "They know we're here. The front gates will be locked down tight.", "Emotion": "anger" },
-			{ "Speaker": "Ambrose", "Text": "I'm open to suggestions that don't involve us being skewered." },
-			{ "Speaker": "Dougal", "Text": "We have two ways out. The old stone bridge to the east, or the drainage sewers below.", "Emotion": "confusion" },
-			{
-			  "Choices": [
-				{
-				  "Text": "The bridge. I refuse to go into the sewers.",
-				  "Steps": [
-					{ "Speaker": "Ambrose", "Text": "The bridge. Definitely the bridge. I will not subject my silk shirt to raw sewage.", "Emotion": "sadness" },
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-10" },
-					{ "Speaker": "Dougal", "Text": "The bridge is a choke point, you vanity-obsessed fool! Fine, but draw your blade.", "Emotion": "anger" },
-					{ "Action": "Signal", "Value": "JumpTo:Path_Bridge" }
-				  ]
-				},
-				{
-				  "Text": "The sewers. It's safer.",
-				  "Steps": [
-					{ "Speaker": "Ambrose", "Text": "As much as it pains me... the sewers offer cover.", "Emotion": "sadness" },
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
-					{ "Speaker": "Dougal", "Text": "A tactical choice. You might have a brain under that hair after all.", "Emotion": "bravery" },
-					{ "Action": "Signal", "Value": "JumpTo:Path_Sewers" }
-				  ]
-				}
-			  ]
-			}
-		  ]
-		}
-	  ]
-	},
-
-	"Path_Bridge": {
-	  "Events": [
-		{
-		  "Type": "Dialogue",
-		  "TimelineName": "Bridge_Ambush",
-		  "Background": "res://assets/background1.jpg",
-		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Ambrose", "Text": "See? The fresh air is lovely. A bit breezy, but manageable." },
-			{ "Action": "Join", "Character": "Orc", "Position": "center", "Facing": "Left" },
-			{ "Speaker": "Orc", "Text": "Puny men not cross bridge! Boss says smash!" },
-			{ "Speaker": "Dougal", "Text": "I told you it was a choke point! Brace yourself!", "Emotion": "fear" }
-		  ]
-		},
-		{ 
-		  "Type": "Battle", 
-		  "Enemies": ["Orc", "Orc"],
+		  "Type": "Battle",
 		  "Ground": "Marble",
-		  "Light": "Morning",
-		  "ElevationEnabled": false,
-		  "MidBattleEvents": [
-			{
-			  "Turn": 2,
-			  "TimelineName": "Bridge_MidFight",
-			  "Steps": [
-				{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-				{ "Speaker": "Ambrose", "Text": "Two of them?! This feels excessive!" },
-				{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-				{ "Speaker": "Dougal", "Text": "Aim for the knees, you idiot! Bring them down to our level!" }
-			  ]
-			}
-		  ]
-		},
-		{
-		  "Type": "Dialogue",
-		  "TimelineName": "Bridge_Aftermath",
-		  "Background": "res://assets/background1.jpg",
-		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Ambrose", "Text": "My arms are going to be sore for a week.", "Emotion": "sadness" },
-			{ "Speaker": "Dougal", "Text": "We broke through. Let's keep moving before reinforcements arrive." },
-			{ "Action": "Signal", "Value": "JumpTo:Final_Gate" }
-		  ]
-		}
-	  ]
-	},
-
-	"Path_Sewers": {
-	  "Events": [
-		{
-		  "Type": "Dialogue",
-		  "TimelineName": "Sewer_Descent",
-		  "Background": "res://assets/background1.jpg",
-		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Ambrose", "Text": "The smell... It's like a tavern floor on a Sunday morning.", "Emotion": "sadness" },
-			{ "Speaker": "Dougal", "Text": "Quiet. The acoustics down here carry sound. We aren't alone.", "Emotion": "fear" },
-			{ "Action": "Join", "Character": "Guard", "Position": "center", "Facing": "Left" },
-			{ "Speaker": "Guard", "Text": "Who's there? I got a crossbow pointed in the dark!" }
-		  ]
-		},
-		{ 
-		  "Type": "Battle", 
-		  "Enemies": ["Guard", "Guard"],
-		  "Ground": "Dirt",
-		  "Light": "Night",
+		  "Light": "Indoors",
 		  "ElevationEnabled": true,
-		  "MidBattleEvents": [
-			{
-			  "Turn": 3,
-			  "TimelineName": "Sewer_MidFight",
-			  "Steps": [
-				{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-				{ "Speaker": "Dougal", "Text": "Watch your footing in the muck! Use the elevation!" }
-			  ]
-			}
+		  "Enemies": [
+			"Orc",
+			"Orc",
+			"Guard",
+            "Guard"
 		  ]
 		},
 		{
 		  "Type": "Dialogue",
-		  "TimelineName": "Sewer_Aftermath",
+		  "TimelineName": "Mission2_TheArtifact",
 		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Ambrose", "Text": "I'm burning these clothes as soon as we're out of here." },
-			{ "Speaker": "Dougal", "Text": "You're alive to complain about it. The exit grate is just ahead." },
-			{ "Action": "Signal", "Value": "JumpTo:Final_Gate" }
-		  ]
-		}
-	  ]
-	},
-
-	"Final_Gate": {
-	  "Events": [
-		{
-		  "Type": "Dialogue",
-		  "TimelineName": "Gate_Intro",
-		  "Background": "res://assets/background1.jpg",
-		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "center", "Facing": "Right" },
-			{ "Speaker": "Ambrose", "Text": "There it is. The perimeter gate. Freedom beckons!" },
-			{ "Action": "Join", "Character": "Orc", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Orc", "Text": "Nobody leaves! Boss orders!" },
-			{ "Speaker": "Dougal", "Text": "A blockade. Typical. Draw steel, Ambrose. One last push!", "Emotion": "bravery" },
+			{
+			  "Action": "Join",
+			  "Character": "Ambrose",
+			  "Position": "Left",
+			  "Facing": "Right"
+			},
+			{
+			  "Action": "Join",
+			  "Character": "Dougal",
+			  "Position": "Right",
+			  "Facing": "Left"
+			},
+			{
+			  "Speaker": "Ambrose",
+			  "Text": "There it is. The Crimson Idol. It’s practically vibrating with blood magic.",
+			  "Emotion": "confusion"
+			},
+			{
+			  "Speaker": "Dougal",
+			  "Text": "That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori rituals. Our employer wants it, but I say we smash it right here.",
+			  "Emotion": "anger"
+			},
 			{
 			  "Choices": [
 				{
-				  "Text": "Let me handle the brute. You take the flank.",
+				  "Text": "We are professionals, Dougal. We take the idol and collect our pay.",
+				  "SetFlag": "TriedToStealIdol",
 				  "Steps": [
-					{ "Speaker": "Ambrose", "Text": "I'll keep the big guy busy. You clear a path!", "Emotion": "bravery" },
-					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:15" },
-					{ "Speaker": "Dougal", "Text": "Don't get yourself killed, pretty boy." }
+					{
+					  "Action": "If",
+					  "Condition": "Rel:Dougal:Agreement < 50",
+					  "Steps": [
+						{
+						  "Speaker": "Dougal",
+						  "Text": "Professionals?! That thing is evil! I've had enough of your 'suave' compromises!",
+						  "Emotion": "anger"
+						},
+						{
+						  "Speaker": "Ambrose",
+						  "Text": "Dougal, wait, don't swing that hammer—!",
+						  "Emotion": "fear"
+						},
+						{
+						  "Action": "SetFlag",
+						  "Value": "IdolDestroyed"
+						},
+						{
+						  "Speaker": "Dougal",
+						  "Text": "It's done. Now let's fight our way out of this Maker-forsaken city."
+						}
+					  ]
+					},
+					{
+					  "Action": "Else",
+					  "Steps": [
+						{
+						  "Speaker": "Dougal",
+						  "Text": "Fine. But you're carrying it. If my skin starts boiling, I'm dropping it in the harbor.",
+						  "Emotion": "sadness"
+						},
+						{
+						  "Action": "SetFlag",
+						  "Value": "IdolSecured"
+						}
+					  ]
+					}
 				  ]
 				},
 				{
-				  "Text": "You take the big one. He's more your type.",
+				  "Text": "You're right. No amount of gold is worth unleashing this into the world. Smash it.",
+				  "SetFlag": "IdolDestroyed",
 				  "Steps": [
-					{ "Speaker": "Ambrose", "Text": "He looks like he wants to wrestle. I leave that to you.", "Emotion": "fear" },
-					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:-10" },
-					{ "Speaker": "Dougal", "Text": "Coward. Stay out of my way, then.", "Emotion": "anger" }
+					{
+					  "Action": "Signal",
+					  "Value": "Rel:Dougal:Respect:30"
+					},
+					{
+					  "Action": "Signal",
+					  "Value": "Rel:Dougal:Agreement:30"
+					},
+					{
+					  "Speaker": "Dougal",
+					  "Text": "Glad to see there's a conscience under that silk shirt, Ambrose.",
+					  "Emotion": "bravery"
+					},
+					{
+					  "Speaker": "Ambrose",
+					  "Text": "Don't get used to it. I'm going to complain about the lost payday for a month."
+					}
 				  ]
 				}
 			  ]
+			},
+			{
+			  "Action": "If",
+			  "Condition": "Flag:AssaultedVault",
+			  "Steps": [
+				{
+				  "Action": "Join",
+				  "Character": "Guard",
+				  "Position": "Center",
+				  "Facing": "Left"
+				},
+				{
+				  "Speaker": "Guard",
+				  "Text": "They're in the vault! Lock down the estate! No one gets out alive!",
+				  "Emotion": "anger"
+				},
+				{
+				  "Action": "Leave",
+				  "Character": "Guard"
+				},
+				{
+				  "Speaker": "Ambrose",
+				  "Text": "Ah. It seems kicking down the front door has finally caught up with us. Weapons ready!"
+				}
+			  ]
+			},
+			{
+			  "Action": "Else",
+			  "Steps": [
+				{
+				  "Speaker": "Ambrose",
+				  "Text": "The guards still think we're auditors. If we walk out calmly, we'll be halfway to Kirkwall before they realize it's gone.",
+				  "Emotion": "bravery"
+				},
+				{
+				  "Speaker": "Dougal",
+				  "Text": "For once, your silver tongue saved us a headache. Let's move."
+				}
+			  ]
+			},
+			{
+			  "Action": "Signal",
+			  "Value": "JumpTo:EscapeSequence"
 			}
 		  ]
-		},
-		{ 
-		  "Type": "Battle", 
-		  "Enemies": ["Orc", "Guard", "Guard"],
-		  "Ground": "Grass",
-		  "Light": "Noon",
-		  "ElevationEnabled": true,
-		  "MidBattleEvents": [
-			{
-			  "Turn": 3,
-			  "TimelineName": "Gate_MidFight",
-			  "Steps": [
-				{ "Action": "Join", "Character": "Guard", "Position": "right", "Facing": "Left" },
-				{ "Speaker": "Guard", "Text": "Don't let them reach the treeline!" },
-				{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-				{ "Speaker": "Ambrose", "Text": "I'm trying, but you keep standing in my way!" }
-			  ]
-			}
+		}
+	  ]
+	},
+	"EscapeSequence": {
+	  "Events": [
+		{
+		  "Type": "Battle",
+		  "Ground": "Marble",
+		  "Light": "Indoors",
+		  "ElevationEnabled": false,
+		  "Enemies": [
+			"Orc",
+            "Guard"
 		  ]
 		},
 		{
 		  "Type": "Dialogue",
-		  "TimelineName": "Mission2_End",
+		  "TimelineName": "Mission2_Conclusion",
+		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
-			{ "Action": "Join", "Character": "Ambrose", "Position": "left", "Facing": "Right" },
-			{ "Action": "Join", "Character": "Dougal", "Position": "right", "Facing": "Left" },
-			{ "Speaker": "Dougal", "Text": "We're clear. Into the forest, now!" },
-			{ "Speaker": "Ambrose", "Text": "Finally. Let's hope the local fauna is friendlier than the guards." },
-			{ "Speaker": "Dougal", "Text": "Keep your guard up. We still have a long walk to the safehouse." }
+			{
+			  "Action": "Join",
+			  "Character": "Ambrose",
+			  "Position": "Left",
+			  "Facing": "Right"
+			},
+			{
+			  "Action": "Join",
+			  "Character": "Dougal",
+			  "Position": "Right",
+			  "Facing": "Left"
+			},
+			{
+			  "Action": "If",
+			  "Condition": "Flag:IdolSecured",
+			  "Steps": [
+				{
+				  "Speaker": "Ambrose",
+				  "Text": "We did it. The idol is secure, and we are wealthy beyond measure. First round at the Hanged Man is on me.",
+				  "Emotion": "bravery"
+				}
+			  ]
+			},
+			{
+			  "Action": "Else",
+			  "Steps": [
+				{
+				  "Speaker": "Ambrose",
+				  "Text": "Well, our employer is going to be furious that we smashed his prize. I suggest we lay low... permanently.",
+				  "Emotion": "sadness"
+				},
+				{
+				  "Speaker": "Dougal",
+				  "Text": "We did the right thing, Ambrose. Someday, you'll realize that pays better than gold.",
+				  "Emotion": "bravery"
+				}
+			  ]
+			}
 		  ]
 		}
 	  ]

@@ -1,0 +1,51 @@
+join Ambrose 1
+
+join Dougal 3 [mirrored="true"]
+
+update Ambrose [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Ambrose:confusion"]
+Ambrose: There it is. The Crimson Idol. It’s practically vibrating with blood magic.
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:anger"]
+Dougal: That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori rituals. Our employer wants it, but I say we smash it right here.
+
+- We are professionals, Dougal. We take the idol and collect our pay.
+	[signal arg="SetFlag:TriedToStealIdol"]
+	if StoryBridge.GetRelationship("Dougal", "Agreement") < 50:
+		update Dougal [animation="Bounce" length="0.4" wait="true"]
+		[signal arg="Emotion:Dougal:anger"]
+		Dougal: Professionals?! That thing is evil! I've had enough of your 'suave' compromises!
+		update Ambrose [animation="Bounce" length="0.4" wait="true"]
+		[signal arg="Emotion:Ambrose:fear"]
+		Ambrose: Dougal, wait, don't swing that hammer—!
+		[signal arg="SetFlag:IdolDestroyed"]
+		Dougal: It's done. Now let's fight our way out of this Maker-forsaken city.
+	else:
+		update Dougal [animation="Bounce" length="0.4" wait="true"]
+		[signal arg="Emotion:Dougal:sadness"]
+		Dougal: Fine. But you're carrying it. If my skin starts boiling, I'm dropping it in the harbor.
+		[signal arg="SetFlag:IdolSecured"]
+- You're right. No amount of gold is worth unleashing this into the world. Smash it.
+	[signal arg="SetFlag:IdolDestroyed"]
+	[signal arg="Rel:Dougal:Respect:30"]
+	[signal arg="Rel:Dougal:Agreement:30"]
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:bravery"]
+	Dougal: Glad to see there's a conscience under that silk shirt, Ambrose.
+	Ambrose: Don't get used to it. I'm going to complain about the lost payday for a month.
+
+if StoryBridge.HasFlag("AssaultedVault") == true:
+	join Guard 2 [mirrored="true"]
+
+	update Guard [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Guard:anger"]
+	Guard: They're in the vault! Lock down the estate! No one gets out alive!
+	leave Guard
+
+	Ambrose: Ah. It seems kicking down the front door has finally caught up with us. Weapons ready!
+else:
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:bravery"]
+	Ambrose: The guards still think we're auditors. If we walk out calmly, we'll be halfway to Kirkwall before they realize it's gone.
+	Dougal: For once, your silver tongue saved us a headache. Let's move.
+[signal arg="JumpTo:EscapeSequence"]

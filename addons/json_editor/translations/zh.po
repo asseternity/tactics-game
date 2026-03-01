@@ -1,0 +1,66 @@
+# Chinese Translation
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "JSON Editor - Excel Style Table Test"
+msgstr "JSON编辑器 - Excel风格表格测试"
+
+
+
+msgid "Test data loaded"
+msgstr "测试数据已加载"
+
+msgid "Switch to English"
+msgstr "切换到英文"
+
+msgid "Switch to Chinese"
+msgstr "切换到中文"
+
+msgid "Enter JSON data"
+msgstr "输入JSON数据"
+
+msgid "tree_view"
+msgstr "树形视图"
+
+msgid "table_view"
+msgstr "表格视图"
+
+msgid "tree_view_with_edit"
+msgstr "树形视图 (双击编辑):"
+
+msgid "excel_style_table_view"
+msgstr "Excel风格表格视图:"
+
+msgid "add_row"
+msgstr "添加行"
+
+msgid "key"
+msgstr "键"
+
+msgid "value"
+msgstr "值"
+
+msgid "load"
+msgstr "加载"
+
+msgid "save"
+msgstr "保存"
+
+msgid "browse"
+msgstr "浏览..."
+
+msgid "file_path"
+msgstr "文件路径"
+
+msgid "language"
+msgstr "语言"
+
+msgid "json_text"
+msgstr "JSON文本"
+
+msgid "enter_json_file_path"
+msgstr "输入JSON文件路径..."
+
+msgid "test_data_loaded"
+msgstr "测试数据已加载" 

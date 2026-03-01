@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 
+// --- Story JSON DTOs: match schema in story/campaign.json and story/mission_*.json ---
+
 public class CampaignData
 {
 	public System.Collections.Generic.List<string> Missions { get; set; }
@@ -37,23 +39,24 @@ public class StoryMidBattleEvent
 	public List<DialogueStep> Steps { get; set; }
 }
 
-public class DialogueStep 
-{
-	public string Action { get; set; } 
-	public string Character { get; set; }
-	public string Position { get; set; }
-	/// <summary>Optional: "Left"|"Right"|"Center" for this join (overrides DefaultFacings for portrait mirroring).</summary>
-	public string Facing { get; set; }
-	public string Speaker { get; set; } 
-	public string Text { get; set; }
-	/// <summary>Optional: "fear"|"bravery"|"sadness"|"anger"|"confusion" — portrait bounce + cartoon particle effect when line is shown.</summary>
-	public string Emotion { get; set; }
-	public string Value { get; set; } 
-	public List<DialogueChoice> Choices { get; set; }
-}
-
 public class DialogueChoice 
 {
 	public string Text { get; set; }
-	public List<DialogueStep> Steps { get; set; } 
+	public string SetFlag { get; set; } // NEW: e.g., "TookTheGold"
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } 
+}
+
+public class DialogueStep 
+{
+	public string Action { get; set; } // Can now be "If", "ElseIf", "Else", or "SetFlag"
+	public string Condition { get; set; } // NEW: e.g., "Flag:TookTheGold" or "Rel:Ambrose:Trust > 50"
+	public string Character { get; set; }
+	public string Position { get; set; }
+	public string Facing { get; set; }
+	public string Speaker { get; set; } 
+	public string Text { get; set; }
+	public string Emotion { get; set; }
+	public string Value { get; set; } 
+	public System.Collections.Generic.List<DialogueChoice> Choices { get; set; }
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } // NEW: Holds the steps inside an If/Else block
 }

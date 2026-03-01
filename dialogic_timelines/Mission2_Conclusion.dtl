@@ -1,0 +1,15 @@
+join Ambrose 1
+
+join Dougal 3 [mirrored="true"]
+
+if StoryBridge.HasFlag("IdolSecured") == true:
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:bravery"]
+	Ambrose: We did it. The idol is secure, and we are wealthy beyond measure. First round at the Hanged Man is on me.
+else:
+	update Ambrose [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Ambrose:sadness"]
+	Ambrose: Well, our employer is going to be furious that we smashed his prize. I suggest we lay low... permanently.
+	update Dougal [animation="Bounce" length="0.4" wait="true"]
+	[signal arg="Emotion:Dougal:bravery"]
+	Dougal: We did the right thing, Ambrose. Someday, you'll realize that pays better than gold.

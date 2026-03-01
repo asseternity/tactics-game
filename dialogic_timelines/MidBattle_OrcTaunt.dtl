@@ -1,0 +1,8 @@
+join Orc 3 [mirrored="true"]
+
+update Orc [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Orc:anger"]
+Orc: Little humans think they can steal from a Tevinter Magister? I will crush your skulls into lyrium dust!
+join Dougal 1
+
+Dougal: Less talking, more bleeding, you oversized brute!
