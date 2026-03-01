@@ -7,14 +7,23 @@ public partial class GameManager
 {
 	private List<Node> _campNodes = new();
 	private Control _campUIRoot;
+	private Dictionary<string, Label3D> _campSpeechBubbles = new();
 
 	public async Task EnterCampStage()
 	{
-		_currentState = State.Cutscene; // Disables camera movement and input
+		_currentState = State.Camp;
 		ShowActions(false);
 		
 		if (DimOverlay != null) DimOverlay.Visible = false;
-		if (StatsLabel != null) StatsLabel.Visible = false;
+		
+		// JUICE: Pop the stats UI away smoothly!
+		if (StatsLabel != null)
+		{
+			StatsLabel.PivotOffset = StatsLabel.Size / 2;
+			Tween statsOut = CreateTween();
+			statsOut.TweenProperty(StatsLabel, "scale", Vector2.Zero, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			statsOut.Finished += () => StatsLabel.Visible = false;
+		}
 
 		// Glide camera back to initial pos
 		Cam.CreateTween().TweenProperty(Cam, "global_position", _initialCamPos, 1.5f)
@@ -23,6 +32,8 @@ public partial class GameManager
 		// 1. Wait for units/obstacles to shrink away
 		await ClearBoardAsync();
 
+		// --- RESTORED CODE: Everything below this line is back! ---
+		
 		// JUICE: Make the grid tiles physically plummet into the abyss!
 		Tween tileDrop = CreateTween().SetParallel(true);
 		foreach (var tile in _grid.Values)
@@ -56,6 +67,94 @@ public partial class GameManager
 		SpawnCampTrees(campCenter);
 		SpawnCampParty(campCenter);
 		ShowCampUI();
+	}
+
+	private void ExitCampStage()
+	{
+		if (IsInstanceValid(_campUIRoot)) _campUIRoot.QueueFree();
+		
+		// JUICE: Pop the stats UI back in!
+		if (StatsLabel != null)
+		{
+			StatsLabel.Visible = true;
+			StatsLabel.Scale = Vector2.Zero;
+			StatsLabel.PivotOffset = StatsLabel.Size / 2;
+			CreateTween().TweenProperty(StatsLabel, "scale", Vector2.One, 0.5f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(0.5f);
+		}
+
+		foreach (Node node in _campNodes)
+		{
+			if (IsInstanceValid(node)) node.QueueFree();
+		}
+		_campNodes.Clear();
+
+		LoadMission(_currentMissionIndex + 1);
+	}
+
+	private void ShowCampUI()
+	{
+		_campUIRoot = new Control(); 
+		_campUIRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_campUIRoot.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		
+		if (MasterTheme != null) _campUIRoot.Theme = MasterTheme; 
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_campUIRoot); else AddChild(_campUIRoot);
+
+		VBoxContainer bottomContainer = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+		bottomContainer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		bottomContainer.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		bottomContainer.AddThemeConstantOverride("separation", 20);
+		_campUIRoot.AddChild(bottomContainer);
+
+		Label title = new Label { Text = "The Party Rests...", HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 36);
+		title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.5f));
+		if (MasterTheme != null && MasterTheme.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont);
+		bottomContainer.AddChild(title);
+
+		// --- NEW: VBox for stacking buttons ---
+		VBoxContainer buttonsBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		buttonsBox.AddThemeConstantOverride("separation", 15);
+
+		Button nextBtn = new Button { Text = "Embark on Next Mission", CustomMinimumSize = new Vector2(450, 90), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+		nextBtn.AddThemeFontSizeOverride("font_size", 32); // Made it much larger!
+		AddButtonJuice(nextBtn);
+		
+		Button partyBtn = new Button { Text = "Manage Party", CustomMinimumSize = new Vector2(250, 50), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+		partyBtn.AddThemeFontSizeOverride("font_size", 20); // Smaller secondary button
+		AddButtonJuice(partyBtn);
+		partyBtn.Pressed += TogglePartyMenu;
+
+		buttonsBox.AddChild(nextBtn);
+		buttonsBox.AddChild(partyBtn);
+
+		MarginContainer margin = new MarginContainer();
+		margin.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		margin.AddThemeConstantOverride("margin_bottom", 60);
+		margin.AddChild(buttonsBox);
+		bottomContainer.AddChild(margin);
+
+		_campUIRoot.Modulate = new Color(1, 1, 1, 0);
+		CreateTween().TweenProperty(_campUIRoot, "modulate:a", 1.0f, 1.0f).SetDelay(1.5f); 
+
+		nextBtn.Pressed += async () => {
+			Tween outTween = CreateTween().SetParallel(true);
+			outTween.TweenProperty(_campUIRoot, "modulate:a", 0f, 0.3f);
+
+			foreach (Node node in _campNodes)
+			{
+				if (node is Node3D n3d)
+				{
+					float delay = (float)GD.RandRange(0f, 0.2f);
+					outTween.TweenProperty(n3d, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.4f)
+						.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In).SetDelay(delay);
+				}
+			}
+			
+			await ToSignal(GetTree().CreateTimer(0.6f), "timeout");
+			ExitCampStage();
+		};
 	}
 
 	private void SpawnCampfire(Vector3 position)
@@ -185,10 +284,11 @@ public partial class GameManager
 		float leftOffset = 1.2f;
 		float rightOffset = 1.2f;
 		var rng = new System.Random();
+		_campSpeechBubbles.Clear();
 
 		for (int i = 0; i < _party.Count; i++)
 		{
-			PersistentUnit unit = _party[i];
+			PersistentUnit partyMember = _party[i];
 			bool placeOnLeft = (i % 2 == 0); 
 			Vector3 spawnPos = campCenter;
 			
@@ -205,101 +305,91 @@ public partial class GameManager
 				rightOffset += 1.2f;
 			}
 
-			Texture2D tex = GD.Load<Texture2D>(unit.Profile.SpritePath);
-			Sprite3D unitSprite = new Sprite3D
+			// === INSTANTIATE THE ACTUAL UNIT ===
+			Unit u = UnitScene.Instantiate<Unit>();
+			AddChild(u);
+			u.GlobalPosition = spawnPos;
+			
+			// Setup as friendly
+			u.Setup(partyMember, true);
+			
+			// Track it for cleanup and logic
+			_units.Add(u);
+			_campNodes.Add(u);
+
+			// Make them organically turn to face the campfire!
+			_ = u.FaceDirection(campCenter);
+
+			// Hide their Combat UI (HP/XP bars) so they look relaxed
+			foreach (Node child in u.GetChildren())
 			{
-				Texture = tex,
+				if (child is Sprite3D spr && spr.Name != "Sprite3D") 
+					spr.Visible = false; // Hides the UI Viewport Sprite3D
+			}
+
+			// === ADD SPEECH BUBBLE ===
+			Label3D bubble = new Label3D {
+				Text = "💬",
+				FontSize = 100,
+				OutlineSize = 12,
+				OutlineModulate = Colors.Black,
 				Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
-				AlphaCut = SpriteBase3D.AlphaCutMode.OpaquePrepass,
-				PixelSize = 0.015f
+				NoDepthTest = true,
+				Position = new Vector3(0, 3.0f, 0), // Position comfortably over their head
+				Visible = false
 			};
-			
-			float targetHeight = 2.0f; 
-			float scaleFactor = targetHeight / (tex.GetHeight() * unitSprite.PixelSize);
-			unitSprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
-			unitSprite.Position = new Vector3(spawnPos.X, targetHeight / 2f, spawnPos.Z);
-			
-			bool defaultFacesRight = unit.Profile.DefaultFacing != UnitFacing.Left;
-			if (placeOnLeft) unitSprite.FlipH = !defaultFacesRight; 
-			else unitSprite.FlipH = defaultFacesRight; 
+			u.AddChild(bubble);
+			_campSpeechBubbles[partyMember.Profile.Name] = bubble;
 
-			AddChild(unitSprite);
-			_campNodes.Add(unitSprite);
-
-			// JUICE: Party jumps in from the sky
-			unitSprite.Position += new Vector3(0, 8f, 0);
-			unitSprite.CreateTween().TweenProperty(unitSprite, "position:y", unitSprite.Position.Y - 8f, 0.6f)
+			// Juice: Party jumps in from the sky
+			u.Position += new Vector3(0, 8f, 0);
+			u.CreateTween().TweenProperty(u, "position:y", u.Position.Y - 8f, 0.6f)
 				.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay((float)rng.NextDouble() * 0.3f);
 		}
+		
+		RefreshCampSpeechBubbles();
 	}
 
-	private void ShowCampUI()
+	public void RefreshCampSpeechBubbles()
 	{
-		_campUIRoot = new Control(); 
-		_campUIRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-		if (MasterTheme != null) _campUIRoot.Theme = MasterTheme; 
-		
-		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_campUIRoot); else AddChild(_campUIRoot);
-
-		VBoxContainer bottomContainer = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
-		bottomContainer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-		bottomContainer.AddThemeConstantOverride("separation", 20);
-		_campUIRoot.AddChild(bottomContainer);
-
-		Label title = new Label { Text = "The Party Rests...", HorizontalAlignment = HorizontalAlignment.Center };
-		title.AddThemeFontSizeOverride("font_size", 36);
-		title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.5f));
-		if (MasterTheme != null && MasterTheme.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont);
-		bottomContainer.AddChild(title);
-
-		Button nextBtn = new Button { Text = "Embark on Next Mission", CustomMinimumSize = new Vector2(350, 70), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
-		AddButtonJuice(nextBtn);
-		
-		MarginContainer margin = new MarginContainer();
-		margin.AddThemeConstantOverride("margin_bottom", 60);
-		margin.AddChild(nextBtn);
-		bottomContainer.AddChild(margin);
-
-		_campUIRoot.Modulate = new Color(1, 1, 1, 0);
-		CreateTween().TweenProperty(_campUIRoot, "modulate:a", 1.0f, 1.0f).SetDelay(1.5f); 
-
-		// JUICE: Exiting the camp animates everything away!
-		nextBtn.Pressed += async () => {
-			Tween outTween = CreateTween().SetParallel(true);
-			outTween.TweenProperty(_campUIRoot, "modulate:a", 0f, 0.3f);
-
-			// Shrink the entire camp away dynamically
-			foreach (Node node in _campNodes)
-			{
-				if (node is Node3D n3d)
-				{
-					float delay = (float)GD.RandRange(0f, 0.2f);
-					outTween.TweenProperty(n3d, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.4f)
-						.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In).SetDelay(delay);
-				}
-			}
-			
-			// Wait for the exit animation to finish
-			await ToSignal(GetTree().CreateTimer(0.6f), "timeout");
-			
-			ExitCampStage();
-		};
-	}
-
-	private void ExitCampStage()
-	{
-		if (IsInstanceValid(_campUIRoot)) _campUIRoot.QueueFree();
-		if (StatsLabel != null) StatsLabel.Visible = true;
-
-		// Note: We don't manually restore grid visibility here anymore, 
-		// because LoadMission will ClearBoard() and Generate a fresh one immediately!
-
-		foreach (Node node in _campNodes)
+		foreach (var kvp in _campSpeechBubbles)
 		{
-			if (IsInstanceValid(node)) node.QueueFree();
+			string charName = kvp.Key;
+			Label3D bubble = kvp.Value;
+			
+			var conv = GetAvailableCampConversation(charName);
+			
+			if (conv != null && !bubble.Visible)
+			{
+				bubble.Visible = true;
+				bubble.Scale = Vector3.Zero;
+				
+				// Pop in
+				Tween t = bubble.CreateTween().SetParallel(true);
+				t.TweenProperty(bubble, "scale", Vector3.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				
+				// Continuous Bob
+				Tween bob = bubble.CreateTween().SetLoops();
+				bob.TweenProperty(bubble, "position:y", 2.0f, 0.6f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				bob.TweenProperty(bubble, "position:y", 1.8f, 0.6f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			}
+			else if (conv == null && bubble.Visible)
+			{
+				Tween t = bubble.CreateTween();
+				t.TweenProperty(bubble, "scale", Vector3.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+				t.Finished += () => bubble.Visible = false;
+			}
 		}
-		_campNodes.Clear();
+	}
 
-		LoadMission(_currentMissionIndex + 1);
+	private void TriggerCampConversation(CampConversation conv)
+	{
+		if (conv.PlayOnce) StoryFlags["CampConv_" + conv.TimelineName] = true;
+		
+		if (_campUIRoot != null) _campUIRoot.Visible = false; 
+		
+		// Convert the raw name to the full res:// path using your constants
+		string fullPath = StoryConstants.TimelinePathPrefix + conv.TimelineName + StoryConstants.TimelineExtension;
+		StartDialogue(fullPath);
 	}
 }

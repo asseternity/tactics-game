@@ -1,0 +1,4465 @@
+=== ALL C# SCRIPTS COMBINED ===
+Generated on: 2026-03-01 23:17:14
+Source folder: res://scripts/
+==========================================================================================
+
+[FILENAME: AssemblyUnloadFix.cs]
+
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
+using System.Text.Json;
+
+/// <summary>
+/// Registers cleanup so Godot can unload C# assemblies when stopping Play or rebuilding.
+/// Prevents "Failed to unload assemblies" / "Giving up on assembly reloading" (see
+/// https://github.com/godotengine/godot/issues/78513 and
+/// https://github.com/dotnet/runtime/issues/65323).
+/// System.Text.Json caches type info and blocks unloading; we clear that cache on unload.
+/// </summary>
+internal static class AssemblyUnloadFix
+{
+	[ModuleInitializer]
+	internal static void Initialize()
+	{
+		AssemblyLoadContext.GetLoadContext(Assembly.GetExecutingAssembly()).Unloading += OnUnloading;
+	}
+
+	static void OnUnloading(AssemblyLoadContext context)
+	{
+		ClearSystemTextJsonCache();
+	}
+
+	/// <summary>
+	/// Clears System.Text.Json's internal type cache so the assembly can be unloaded.
+	/// From: https://github.com/dotnet/runtime/issues/65323#issuecomment-1320949911
+	/// </summary>
+	static void ClearSystemTextJsonCache()
+	{
+		try
+		{
+			var assembly = typeof(JsonSerializerOptions).Assembly;
+			var updateHandlerType = assembly.GetType("System.Text.Json.JsonSerializerOptionsUpdateHandler");
+			var clearCacheMethod = updateHandlerType?.GetMethod("ClearCache", BindingFlags.Static | BindingFlags.Public);
+			clearCacheMethod?.Invoke(null, new object[] { null });
+		}
+		catch
+		{
+			// Best-effort; avoid throwing during unload
+		}
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: DialogicPipeline.cs]
+
+using Godot;
+using System.IO;
+using System.Collections.Generic;
+using System.Text;
+using System.Linq;
+
+[Tool]
+public partial class DialogicPipeline : Node
+{
+	[Export]
+	public bool GenerateDialogicFiles
+	{
+		get => false;
+		set { if (value) RunPipeline(); }
+	}
+
+	private Dictionary<string, Dictionary<string, string>> _inheritedCharacters = new();
+
+	private void RunPipeline()
+	{
+		GD.Print("\n[PIPELINE] Generating Dialogic Files...");
+
+		CampaignData campaign = StoryLoader.GetCampaignData(ProjectSettings.GlobalizePath("res://story/campaign.json"));
+		if (campaign == null || campaign.Missions == null)
+		{
+			GD.PrintErr("[PIPELINE] ERROR: Could not parse campaign data.");
+			return;
+		}
+
+		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_timelines/"));
+		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_characters/"));
+
+		// === THE FIX: Process each mission one by one so "Start" sections don't overwrite each other! ===
+		foreach (string missionPath in campaign.Missions)
+		{
+			StoryData missionData = StoryLoader.GetStoryData(ProjectSettings.GlobalizePath(missionPath));
+			if (missionData == null) continue;
+
+			BuildInheritanceMap(missionData);
+			GenerateFiles(missionData);
+		}
+		
+		if (campaign.CampConversations != null)
+		{
+			HashSet<string> uniqueCampCharacters = new HashSet<string>();
+			foreach (var campConv in campaign.CampConversations)
+			{
+				if (campConv.Steps != null && campConv.Steps.Count > 0)
+				{
+					// We pass null for StoryData here because camp convos don't have mission-level default facings
+					WriteTimelineFile(campConv.TimelineName, campConv.Steps, uniqueCampCharacters, new StoryData());
+				}
+			}
+		}
+
+		GD.Print("[PIPELINE] Dialogic Generation Complete! Reloading resources...");
+		EditorInterface.Singleton.GetResourceFilesystem().Scan();
+	}
+
+	private Dictionary<string, string> CloneMap(Dictionary<string, string> source) => new Dictionary<string, string>(source);
+
+	private static readonly HashSet<string> ValidEmotions = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase) { "fear", "bravery", "sadness", "anger", "confusion" };
+
+	private static string NormalizeEmotion(string emotion)
+	{
+		if (string.IsNullOrWhiteSpace(emotion)) return null;
+		string e = emotion.Trim();
+		return ValidEmotions.Contains(e) ? e.ToLowerInvariant() : null;
+	}
+
+	private static bool ShouldMirrorPortrait(string characterName, string joinFacing, StoryData data)
+	{
+		string resolved = null;
+		if (!string.IsNullOrEmpty(joinFacing))
+			resolved = joinFacing.Trim();
+		else if (data.DefaultFacings != null && data.DefaultFacings.TryGetValue(characterName, out string defaultFacing) && !string.IsNullOrEmpty(defaultFacing))
+			resolved = defaultFacing.Trim();
+		if (string.IsNullOrEmpty(resolved)) return false;
+		return string.Equals(resolved, "Left", System.StringComparison.OrdinalIgnoreCase);
+	}
+
+	private void BuildInheritanceMap(StoryData data)
+	{
+		_inheritedCharacters.Clear();
+
+		var timelineSteps = new Dictionary<string, List<DialogueStep>>();
+		var firstTimelineOfSection = new Dictionary<string, string>();
+
+		if (data.Sections == null) return;
+
+		foreach (var kvp in data.Sections)
+		{
+			string sectionName = kvp.Key;
+			var events = kvp.Value.Events;
+			
+			if (events == null || events.Count == 0) continue;
+
+			for (int i = 0; i < events.Count; i++)
+			{
+				var ev = events[i];
+				if (ev.Type == "Dialogue" && ev.Steps != null)
+				{
+					timelineSteps[ev.TimelineName] = ev.Steps;
+					if (i == 0) firstTimelineOfSection[sectionName] = ev.TimelineName;
+				}
+				else if (ev.Type == "Battle" && ev.MidBattleEvents != null)
+				{
+					foreach (var mid in ev.MidBattleEvents)
+					{
+						if (mid.Steps != null) timelineSteps[mid.TimelineName] = mid.Steps;
+					}
+				}
+			}
+		}
+
+		var visited = new HashSet<string>();
+
+		foreach (var kvp in timelineSteps)
+		{
+			SimulateStepsForJumps(kvp.Value, new Dictionary<string, string>(), timelineSteps, firstTimelineOfSection, visited);
+		}
+	}
+
+	private void SimulateStepsForJumps(List<DialogueStep> steps, Dictionary<string, string> activeChars, Dictionary<string, List<DialogueStep>> allSteps, Dictionary<string, string> firstTimelines, HashSet<string> visited)
+	{
+		foreach (var step in steps)
+		{
+			if (step.Action == "Join") activeChars[step.Character] = step.Position;
+			else if (step.Action == "Leave") activeChars.Remove(step.Character);
+			else if (step.Action == "Signal" && !string.IsNullOrEmpty(step.Value) && step.Value.StartsWith("JumpTo:"))
+			{
+				string targetSection = step.Value.Split(':')[1];
+				if (firstTimelines.TryGetValue(targetSection, out string targetTimeline))
+				{
+					if (!visited.Contains(targetTimeline))
+					{
+						visited.Add(targetTimeline);
+						_inheritedCharacters[targetTimeline] = CloneMap(activeChars);
+						
+						if (allSteps.ContainsKey(targetTimeline))
+						{
+							SimulateStepsForJumps(allSteps[targetTimeline], CloneMap(activeChars), allSteps, firstTimelines, visited);
+						}
+					}
+				}
+			}
+			else if (step.Choices != null)
+			{
+				foreach (var choice in step.Choices)
+				{
+					SimulateStepsForJumps(choice.Steps, CloneMap(activeChars), allSteps, firstTimelines, visited);
+				}
+			}
+		}
+	}
+
+	private void GenerateFiles(StoryData data)
+	{
+		if (data.Sections == null) return;
+		HashSet<string> uniqueCharacters = new HashSet<string>();
+
+		foreach (var section in data.Sections.Values)
+		{
+			if (section.Events == null) continue;
+			foreach (var ev in section.Events)
+			{
+				if (ev.Type == "Dialogue" && ev.Steps != null)
+					WriteTimelineFile(ev.TimelineName, ev.Steps, uniqueCharacters, data);
+				
+				if (ev.Type == "Battle" && ev.MidBattleEvents != null)
+				{
+					foreach (var midEvent in ev.MidBattleEvents)
+					{
+						if (midEvent.Steps != null && midEvent.Steps.Count > 0)
+							WriteTimelineFile(midEvent.TimelineName, midEvent.Steps, uniqueCharacters, data);
+					}
+				}
+			}
+		}
+
+		foreach (string charName in uniqueCharacters)
+		{
+			string charPath = ProjectSettings.GlobalizePath($"res://dialogic_characters/{charName}.dch");
+			if (!File.Exists(charPath))
+			{
+				string dchContent = $@"[gd_resource type=""Resource"" script_class=""DialogicCharacter"" load_steps=2 format=3]
+[ext_resource type=""Script"" path=""res://addons/dialogic/Resources/character.gd"" id=""1_char""]
+[resource]
+script = ExtResource(""1_char"")
+display_name = ""{charName}""
+nicknames = [""""]
+color = Color(1, 1, 1, 1)
+description = """"
+scale = 1.0
+offset = Vector2(0, 0)
+mirror = false
+default_portrait = """"
+portraits = {{}}
+custom_info = {{}}
+";
+				File.WriteAllText(charPath, dchContent);
+				GD.Print($"[PIPELINE] Created Character Stub: {charName}.dch");
+			}
+		}
+	}
+
+	private void WriteTimelineFile(string name, List<DialogueStep> steps, HashSet<string> uniqueCharacters, StoryData data)
+	{
+		string timelinePath = ProjectSettings.GlobalizePath($"res://dialogic_timelines/{name}.dtl");
+		StringBuilder dtl = new StringBuilder();
+		
+		var startingChars = _inheritedCharacters.ContainsKey(name) ? CloneMap(_inheritedCharacters[name]) : new Dictionary<string, string>();
+		
+		ParseSteps(steps, dtl, uniqueCharacters, "", data, startingChars);
+		File.WriteAllText(timelinePath, dtl.ToString());
+	}
+
+	private void ParseSteps(List<DialogueStep> steps, StringBuilder dtl, HashSet<string> uniqueCharacters, string indent, StoryData data, Dictionary<string, string> currentActiveChars)
+	{
+		if (steps == null) return;
+
+		foreach (var step in steps)
+		{
+			// === THE FIX: Restored Signal, Join, and Leave Logic ===
+			if (step.Action == "Signal" && !string.IsNullOrEmpty(step.Value))
+			{
+				if (step.Value.StartsWith("JumpTo:"))
+				{
+					string targetSection = step.Value.Split(':')[1];
+					bool canSeamlessJump = false;
+					string targetTimeline = "";
+					
+					if (data.Sections.TryGetValue(targetSection, out StorySection section) && section.Events.Count > 0)
+					{
+						if (section.Events[0].Type == "Dialogue") 
+						{
+							canSeamlessJump = true;
+							targetTimeline = section.Events[0].TimelineName;
+						}
+					}
+
+					if (canSeamlessJump)
+					{
+						dtl.AppendLine($"{indent}[signal arg=\"SetSectionQuietly:{targetSection}\"]");
+						dtl.AppendLine($"{indent}jump {targetTimeline}/");
+					}
+					else
+					{
+						dtl.AppendLine($"{indent}[signal arg=\"{step.Value}\"]");
+					}
+				}
+				else 
+				{
+					dtl.AppendLine($"{indent}[signal arg=\"{step.Value}\"]"); 
+				}
+				continue;
+			}
+			else if (step.Action == "Join")
+			{
+				uniqueCharacters.Add(step.Character);
+				
+				if (currentActiveChars.TryGetValue(step.Character, out string existingPos) && existingPos == step.Position)
+				{
+					// Do nothing, they are already here!
+				}
+				else
+				{
+					currentActiveChars[step.Character] = step.Position;
+					
+					// THE FIX: Translate our JSON words into Dialogic's default numbered anchors!
+					string posId = step.Position;
+					
+					if (string.Equals(posId, "FarLeft", System.StringComparison.OrdinalIgnoreCase)) posId = "0";
+					else if (string.Equals(posId, "Left", System.StringComparison.OrdinalIgnoreCase)) posId = "1";
+					else if (string.Equals(posId, "Center", System.StringComparison.OrdinalIgnoreCase)) posId = "2";
+					else if (string.Equals(posId, "Right", System.StringComparison.OrdinalIgnoreCase)) posId = "3";
+					else if (string.Equals(posId, "FarRight", System.StringComparison.OrdinalIgnoreCase)) posId = "4";
+
+					bool mirror = ShouldMirrorPortrait(step.Character, step.Facing, data);
+					
+					// Restored to your EXACT original syntax
+					string joinLine = $"join {step.Character} {posId}";
+					if (mirror) joinLine += " [mirrored=\"true\"]";
+					
+					dtl.AppendLine($"{indent}{joinLine}");
+					dtl.AppendLine();
+				}
+				continue;
+			}
+			else if (step.Action == "Leave")
+			{
+				currentActiveChars.Remove(step.Character);
+				dtl.AppendLine($"{indent}leave {step.Character}");
+				dtl.AppendLine();
+				continue;
+			}
+
+			// === If / ElseIf / Else Logic ===
+			if (step.Action == "If")
+			{
+				dtl.AppendLine($"{indent}if {TranslateCondition(step.Condition)}:");
+				ParseSteps(step.Steps, dtl, uniqueCharacters, indent + "\t", data, CloneMap(currentActiveChars));
+			}
+			else if (step.Action == "ElseIf")
+			{
+				dtl.AppendLine($"{indent}elif {TranslateCondition(step.Condition)}:");
+				ParseSteps(step.Steps, dtl, uniqueCharacters, indent + "\t", data, CloneMap(currentActiveChars));
+			}
+			else if (step.Action == "Else")
+			{
+				dtl.AppendLine($"{indent}else:");
+				ParseSteps(step.Steps, dtl, uniqueCharacters, indent + "\t", data, CloneMap(currentActiveChars));
+			}
+			else if (step.Action == "SetFlag")
+			{
+				dtl.AppendLine($"{indent}[signal arg=\"SetFlag:{step.Value}\"]");
+			}
+			else if (step.Choices != null && step.Choices.Count > 0)
+			{
+				dtl.AppendLine(); 
+				foreach (var choice in step.Choices)
+				{
+					dtl.AppendLine($"{indent}- {choice.Text}");
+					
+					// If the choice sets a flag, inject the signal immediately!
+					if (!string.IsNullOrEmpty(choice.SetFlag))
+					{
+						dtl.AppendLine($"{indent}\t[signal arg=\"SetFlag:{choice.SetFlag}\"]");
+					}
+					
+					ParseSteps(choice.Steps, dtl, uniqueCharacters, indent + "\t", data, CloneMap(currentActiveChars)); 
+				}
+				dtl.AppendLine();
+			}
+			else if (!string.IsNullOrEmpty(step.Speaker) && !string.IsNullOrEmpty(step.Text))
+			{
+				uniqueCharacters.Add(step.Speaker);
+				string emotion = NormalizeEmotion(step.Emotion);
+				if (!string.IsNullOrEmpty(emotion))
+				{
+					dtl.AppendLine($"{indent}update {step.Speaker} [animation=\"Bounce\" length=\"0.4\" wait=\"true\"]");
+					dtl.AppendLine($"{indent}[signal arg=\"Emotion:{step.Speaker}:{emotion}\"]");
+				}
+				dtl.AppendLine($"{indent}{step.Speaker}: {step.Text}");
+			}
+		}
+	}
+	
+	private string TranslateCondition(string cond)
+	{
+		if (string.IsNullOrWhiteSpace(cond)) return "true";
+		cond = cond.Trim();
+
+		// THE FIX: Changed 'GameManager' to 'StoryBridge' in all three checks!
+		if (cond.StartsWith("Rel:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string[] idParts = tokens[0].Split(':');
+				if (idParts.Length == 3)
+					return $"StoryBridge.GetRelationship(\"{idParts[1]}\", \"{idParts[2]}\") {tokens[1]} {tokens[2]}";
+			}
+		}
+		else if (cond.StartsWith("!Flag:"))
+		{
+			return $"StoryBridge.HasFlag(\"{cond.Substring(6)}\") == false";
+		}
+		else if (cond.StartsWith("Flag:"))
+		{
+			return $"StoryBridge.HasFlag(\"{cond.Substring(5)}\") == true";
+		}
+
+		return cond; 
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: EmotionEffect.cs]
+
+using Godot;
+using System.Collections.Generic;
+
+/// <summary>
+/// Juicy cartoon particle burst for dialogue emotions. 
+/// Features one MASSIVE core emotion and smaller accent bursts.
+/// </summary>
+public partial class EmotionEffect : Node2D
+{
+	private static readonly Dictionary<string, string> EmotionSymbols = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+	{
+		{ "fear", "!!" },
+		{ "bravery", "★" },
+		{ "sadness", "…" },
+		{ "anger", "!!" },
+		{ "confusion", "?" }
+	};
+
+	private static readonly Dictionary<string, Color> EmotionColors = new Dictionary<string, Color>(System.StringComparer.OrdinalIgnoreCase)
+	{
+		{ "fear", new Color(0.6f, 0.6f, 1f, 1f) },
+		{ "bravery", new Color(1f, 0.9f, 0.3f, 1f) },
+		{ "sadness", new Color(0.5f, 0.6f, 0.9f, 1f) },
+		{ "anger", new Color(1f, 0.25f, 0.2f, 1f) },
+		{ "confusion", new Color(1f, 0.85f, 0.4f, 1f) }
+	};
+
+	private const float Duration = 2.0f;
+	private const int AccentParticleCount = 3;
+
+	public void Play(string emotionType, Vector2? portraitScreenPosition = null)
+	{
+		if (string.IsNullOrEmpty(emotionType)) { QueueFree(); return; }
+		Vector2 viewSize = GetViewport().GetVisibleRect().Size;
+
+		// 1. Create a temporary CanvasLayer that sits above EVERYTHING (Dialogic is usually Layer 1 or 2)
+		CanvasLayer topLayer = new CanvasLayer { Layer = 100 };
+		AddChild(topLayer);
+
+		// 2. Create a container Node2D inside that CanvasLayer so our local positioning math still works
+		Node2D container = new Node2D 
+		{ 
+			Position = portraitScreenPosition ?? new Vector2(viewSize.X * 0.5f, viewSize.Y * 0.4f) 
+		};
+		topLayer.AddChild(container);
+
+		string key = emotionType.Trim().ToLowerInvariant();
+		if (!EmotionSymbols.TryGetValue(key, out string symbol)) symbol = "!";
+		if (!EmotionColors.TryGetValue(key, out Color color)) color = Colors.White;
+
+		Font font = GD.Load<Font>("res://fonts/yoster.ttf");
+		var rng = new System.Random();
+
+		// 3. Spawn the BIG MAIN emotion and add it to the CONTAINER, not 'this'
+		Label mainLabel = CreateCartoonyLabel(symbol, color, font, 110);
+		container.AddChild(mainLabel);
+		AnimateMainEmotion(mainLabel, color, key, rng);
+
+		// 4. Spawn the smaller accent particles
+		for (int i = 0; i < AccentParticleCount; i++)
+		{
+			Label accent = CreateCartoonyLabel(symbol, color, font, 30 + rng.Next(0, 15));
+			container.AddChild(accent);
+			AnimateAccentParticle(accent, color, rng);
+		}
+
+		GetTree().CreateTimer(Duration).Timeout += QueueFree;
+	}
+
+	/// <summary>Helper to create bold, outlined labels centered on their origin.</summary>
+	private Label CreateCartoonyLabel(string text, Color color, Font font, int fontSize)
+	{
+		var label = new Label
+		{
+			Text = text,
+			Modulate = color,
+			Scale = Vector2.Zero,
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center,
+			// Center the anchor so it grows from the middle
+			GrowHorizontal = Control.GrowDirection.Both,
+			GrowVertical = Control.GrowDirection.Both,
+			// Approximate center pivot for juicy scaling/rotation
+			PivotOffset = new Vector2(fontSize * 0.4f, fontSize * 0.5f) 
+		};
+
+		label.AddThemeFontSizeOverride("font_size", fontSize);
+		if (font != null) label.AddThemeFontOverride("font", font);
+		
+		// Game Juice: Thick black outline
+		label.AddThemeColorOverride("font_outline_color", Colors.Black);
+		label.AddThemeConstantOverride("outline_size", Mathf.Max(6, fontSize / 8));
+
+		return label;
+	}
+
+	private void AnimateMainEmotion(Label label, Color color, string emotion, System.Random rng)
+	{
+		Tween t = CreateTween();
+		
+		switch (emotion)
+		{
+			case "anger":
+				// HUGE pop, intense shake
+				t.TweenProperty(label, "scale", new Vector2(1.8f, 1.8f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				for(int i = 0; i < 5; i++) {
+					t.Chain().TweenProperty(label, "position", new Vector2((float)(rng.NextDouble()-0.5)*15f, (float)(rng.NextDouble()-0.5)*15f), 0.05f);
+				}
+				t.Chain().TweenProperty(label, "position", Vector2.Zero, 0.05f);
+				break;
+
+			case "confusion":
+				// Extreme elastic wobble
+				t.SetParallel(true);
+				t.TweenProperty(label, "scale", new Vector2(1.4f, 1.4f), 0.6f).SetTrans(Tween.TransitionType.Elastic).SetEase(Tween.EaseType.Out);
+				t.TweenProperty(label, "rotation", 0.4f, 0.5f).SetTrans(Tween.TransitionType.Elastic).SetEase(Tween.EaseType.Out);
+				t.SetParallel(false);
+				break;
+
+			case "bravery":
+				// Heroic over-scale and shine (stretch up)
+				t.TweenProperty(label, "scale", new Vector2(1.2f, 1.8f), 0.1f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+				t.Chain().TweenProperty(label, "scale", new Vector2(1.6f, 1.6f), 0.3f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+				break;
+
+			case "sadness":
+				// Slow droop and squash
+				t.TweenProperty(label, "scale", new Vector2(0.8f, 1.5f), 0.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+				t.Chain().TweenProperty(label, "scale", new Vector2(1.4f, 0.9f), 0.4f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+				t.Parallel().TweenProperty(label, "position", new Vector2(0, 25f), 0.8f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				break;
+
+			case "fear":
+				// Fast shivering shrink
+				t.TweenProperty(label, "scale", new Vector2(1.5f, 1.5f), 0.1f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				for(int i = 0; i < 6; i++) {
+					t.Chain().TweenProperty(label, "position", new Vector2((float)(rng.NextDouble()-0.5)*10f, 0), 0.04f);
+				}
+				t.Chain().TweenProperty(label, "scale", new Vector2(1.1f, 1.3f), 0.2f);
+				break;
+		}
+
+		// Universal follow-through: Hang for a bit, then fade out while drifting up
+		Tween fade = CreateTween().SetParallel(true);
+		fade.TweenProperty(label, "modulate", new Color(color.R, color.G, color.B, 0f), 0.4f).SetDelay(1.2f);
+		fade.TweenProperty(label, "position", label.Position + new Vector2(0, -20f), 0.6f).SetDelay(1.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+	}
+
+	private void AnimateAccentParticle(Label label, Color color, System.Random rng)
+	{
+		// Shoot outward from the center quickly, then hang and fade
+		float angle = (float)(rng.NextDouble() * Mathf.Pi * 2);
+		float distance = 60f + (float)rng.NextDouble() * 40f;
+		Vector2 targetPos = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * distance;
+		
+		Tween t = CreateTween().SetParallel(true);
+		t.TweenProperty(label, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(label, "position", targetPos, 0.3f).SetTrans(Tween.TransitionType.Circ).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(label, "rotation", (float)(rng.NextDouble() - 0.5) * 2f, 0.4f);
+		
+		t.Chain().TweenInterval(0.6f + (float)rng.NextDouble() * 0.2f);
+		t.Chain().TweenProperty(label, "modulate", new Color(color.R, color.G, color.B, 0f), 0.3f);
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameData.cs]
+
+using Godot;
+using System.Collections.Generic;
+
+// === ENV & FACING ===
+public enum UnitFacing { Left, Right, Center }
+public enum GroundType { Grass, Dirt, Marble }
+public enum LightingMood { Noon, Morning, Night, Indoors }
+
+// === UNITS ===
+public struct UnitProfile
+{
+	public string Name;
+	public string SpritePath;
+	public int MaxHP;
+	public int AttackDamage;
+	public int AttackRange; 
+	public int Movement;
+	public int XPReward;
+	public UnitFacing DefaultFacing;
+
+	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward, UnitFacing defaultFacing = UnitFacing.Center)
+	{
+		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
+		AttackDamage = attackDmg; AttackRange = attackRange; Movement = movement; XPReward = xpReward;
+		DefaultFacing = defaultFacing;
+	}
+}
+
+public class PersistentUnit
+{
+	public UnitProfile Profile;
+	public int Level = 1;
+	public int CurrentXP = 0;
+	public int MaxXP = 100;
+	
+	public int MaxHP;
+	public int CurrentHP;
+	public int AttackDamage;
+	public int AttackRange;
+	public int Movement;
+	public int XPReward; 
+
+	public bool IsPlayerCharacter = false;
+	public Dictionary<string, int> Relationships = new();
+
+	public Equipment EquippedWeapon;
+	public Equipment EquippedArmor;
+
+	public int GetTotalMaxHP() => MaxHP + (EquippedWeapon?.BonusMaxHP ?? 0) + (EquippedArmor?.BonusMaxHP ?? 0);
+	public int GetTotalDamage() => AttackDamage + (EquippedWeapon?.BonusDamage ?? 0) + (EquippedArmor?.BonusDamage ?? 0);
+	public int GetTotalMovement() => Movement + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
+
+	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
+	{
+		Profile = profile;
+		MaxHP = profile.MaxHP;
+		CurrentHP = profile.MaxHP;
+		AttackDamage = profile.AttackDamage;
+		AttackRange = profile.AttackRange;
+		Movement = profile.Movement;
+		XPReward = profile.XPReward;
+		IsPlayerCharacter = isPlayer;
+
+		if (!IsPlayerCharacter)
+		{
+			Relationships.Add("Respect", 50);
+			Relationships.Add("Agreement", 50);
+			Relationships.Add("Fear", 10);
+		}
+	}
+
+	public void HealBetweenBattles()
+	{
+		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
+		if (CurrentHP <= 0) CurrentHP = 1; 
+		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
+	}
+}
+
+public struct UnitSpawn
+{
+	public string ProfileId;
+	public Vector3 Position;
+	public UnitSpawn(string profileId, Vector3 position) { ProfileId = profileId; Position = position; }
+}
+
+// === BATTLE & SCRIPT EVENTS ===
+public class BattleSetup
+{
+	public List<Vector3> FriendlySpawns = new(); 
+	public List<UnitSpawn> Enemies = new();
+	public List<MidBattleEvent> MidBattleEvents = new();
+	public GroundType Ground = GroundType.Grass;
+	public LightingMood Light = LightingMood.Noon;
+	public bool ElevationEnabled = false;
+}
+
+public enum EventType { Dialogue, Battle, AddPartyMember, JumpToSection }
+
+public class ScriptEvent
+{
+	public EventType Type;
+	public string TimelinePath;
+	public BattleSetup BattleData;
+	public string ProfileId;
+	public string Background;
+	public string TargetSection;
+	public bool IsPlayer;
+
+	public static ScriptEvent Dialogue(string path, string background = null) => new ScriptEvent { Type = EventType.Dialogue, TimelinePath = path, Background = background };
+	public static ScriptEvent Battle(BattleSetup battle) => new ScriptEvent { Type = EventType.Battle, BattleData = battle };
+	public static ScriptEvent AddPartyMember(string profileId, bool isPlayer = false) => new ScriptEvent { Type = EventType.AddPartyMember, ProfileId = profileId, IsPlayer = isPlayer };
+	public static ScriptEvent JumpToSection(string target) => new ScriptEvent { Type = EventType.JumpToSection, TargetSection = target };
+}
+
+public struct MidBattleEvent
+{
+	public int Turn;
+	public string TimelinePath;
+	public string Background;
+	public MidBattleEvent(int turn, string path, string background = null) 
+	{ 
+		Turn = turn; 
+		TimelinePath = path; 
+		Background = background; 
+	}
+}
+
+// === EQUIPMENT ===
+public enum EquipSlot { Weapon, Armor }
+
+public class GameItem
+{
+	public string Id;
+	public string Name;
+	public string IconPath;
+	public string Description;
+}
+
+public class Equipment : GameItem
+{
+	public EquipSlot Slot;
+	public int BonusMaxHP;
+	public int BonusDamage;
+	public int BonusMovement;
+	
+	public Equipment(string id, string name, string iconPath, EquipSlot slot, int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0)
+	{
+		Id = id; Name = name; IconPath = iconPath; Slot = slot;
+		BonusMaxHP = bonusHp; BonusDamage = bonusDmg; BonusMovement = bonusMov;
+		
+		List<string> stats = new();
+		if (BonusDamage > 0) stats.Add($"+{BonusDamage} DMG");
+		if (BonusMaxHP > 0) stats.Add($"+{BonusMaxHP} HP");
+		if (BonusMovement > 0) stats.Add($"+{BonusMovement} Move");
+		Description = string.Join(" | ", stats);
+	}
+
+	public Equipment Clone() => (Equipment)this.MemberwiseClone();
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameManager.Camp.cs]
+
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public partial class GameManager
+{
+	private List<Node> _campNodes = new();
+	private Control _campUIRoot;
+	private Dictionary<string, Label3D> _campSpeechBubbles = new();
+
+	public async Task EnterCampStage()
+	{
+		_currentState = State.Camp;
+		ShowActions(false);
+		
+		if (DimOverlay != null) DimOverlay.Visible = false;
+		
+		// JUICE: Pop the stats UI away smoothly!
+		if (StatsLabel != null)
+		{
+			StatsLabel.PivotOffset = StatsLabel.Size / 2;
+			Tween statsOut = CreateTween();
+			statsOut.TweenProperty(StatsLabel, "scale", Vector2.Zero, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			statsOut.Finished += () => StatsLabel.Visible = false;
+		}
+
+		// Glide camera back to initial pos
+		Cam.CreateTween().TweenProperty(Cam, "global_position", _initialCamPos, 1.5f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		// 1. Wait for units/obstacles to shrink away
+		await ClearBoardAsync();
+
+		// --- RESTORED CODE: Everything below this line is back! ---
+		
+		// JUICE: Make the grid tiles physically plummet into the abyss!
+		Tween tileDrop = CreateTween().SetParallel(true);
+		foreach (var tile in _grid.Values)
+		{
+			float delay = (float)GD.RandRange(0f, 0.25f);
+			tileDrop.TweenProperty(tile, "position:y", -20f, 0.5f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In).SetDelay(delay);
+		}
+		
+		// Wait for the tiles to finish falling
+		await ToSignal(GetTree().CreateTimer(0.75f), "timeout");
+
+		// Hide them so the engine doesn't render them deep underground
+		foreach (var tile in _grid.Values)
+		{
+			tile.Visible = false;
+			if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh) mesh.Visible = false;
+		}
+
+		// Set the mood to Night and Dirt
+		ApplyEnvironment(new BattleSetup { Light = LightingMood.Night, Ground = GroundType.Dirt });
+
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+		Vector3 rayOrigin = Cam.ProjectRayOrigin(screenSize / 2f);
+		Vector3 rayDir = Cam.ProjectRayNormal(screenSize / 2f);
+		Plane groundPlane = new Plane(Vector3.Up, 0f);
+		
+		Vector3 campCenter = groundPlane.IntersectsRay(rayOrigin, rayDir) ?? new Vector3((GridWidth - 1) * TileSize / 2f, 0, (GridDepth - 1) * TileSize / 2f);
+
+		SpawnCampfire(campCenter);
+		SpawnCampTrees(campCenter);
+		SpawnCampParty(campCenter);
+		ShowCampUI();
+	}
+
+	private void ExitCampStage()
+	{
+		if (IsInstanceValid(_campUIRoot)) _campUIRoot.QueueFree();
+		
+		// JUICE: Pop the stats UI back in!
+		if (StatsLabel != null)
+		{
+			StatsLabel.Visible = true;
+			StatsLabel.Scale = Vector2.Zero;
+			StatsLabel.PivotOffset = StatsLabel.Size / 2;
+			CreateTween().TweenProperty(StatsLabel, "scale", Vector2.One, 0.5f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(0.5f);
+		}
+
+		foreach (Node node in _campNodes)
+		{
+			if (IsInstanceValid(node)) node.QueueFree();
+		}
+		_campNodes.Clear();
+
+		LoadMission(_currentMissionIndex + 1);
+	}
+
+	private void ShowCampUI()
+	{
+		_campUIRoot = new Control(); 
+		_campUIRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_campUIRoot.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		
+		if (MasterTheme != null) _campUIRoot.Theme = MasterTheme; 
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_campUIRoot); else AddChild(_campUIRoot);
+
+		VBoxContainer bottomContainer = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+		bottomContainer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		bottomContainer.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		bottomContainer.AddThemeConstantOverride("separation", 20);
+		_campUIRoot.AddChild(bottomContainer);
+
+		Label title = new Label { Text = "The Party Rests...", HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 36);
+		title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.5f));
+		if (MasterTheme != null && MasterTheme.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont);
+		bottomContainer.AddChild(title);
+
+		// --- NEW: VBox for stacking buttons ---
+		VBoxContainer buttonsBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		buttonsBox.AddThemeConstantOverride("separation", 15);
+
+		Button nextBtn = new Button { Text = "Embark on Next Mission", CustomMinimumSize = new Vector2(450, 90), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+		nextBtn.AddThemeFontSizeOverride("font_size", 32); // Made it much larger!
+		AddButtonJuice(nextBtn);
+		
+		Button partyBtn = new Button { Text = "Manage Party", CustomMinimumSize = new Vector2(250, 50), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+		partyBtn.AddThemeFontSizeOverride("font_size", 20); // Smaller secondary button
+		AddButtonJuice(partyBtn);
+		partyBtn.Pressed += TogglePartyMenu;
+
+		buttonsBox.AddChild(nextBtn);
+		buttonsBox.AddChild(partyBtn);
+
+		MarginContainer margin = new MarginContainer();
+		margin.MouseFilter = Control.MouseFilterEnum.Ignore; 
+		margin.AddThemeConstantOverride("margin_bottom", 60);
+		margin.AddChild(buttonsBox);
+		bottomContainer.AddChild(margin);
+
+		_campUIRoot.Modulate = new Color(1, 1, 1, 0);
+		CreateTween().TweenProperty(_campUIRoot, "modulate:a", 1.0f, 1.0f).SetDelay(1.5f); 
+
+		nextBtn.Pressed += async () => {
+			Tween outTween = CreateTween().SetParallel(true);
+			outTween.TweenProperty(_campUIRoot, "modulate:a", 0f, 0.3f);
+
+			foreach (Node node in _campNodes)
+			{
+				if (node is Node3D n3d)
+				{
+					float delay = (float)GD.RandRange(0f, 0.2f);
+					outTween.TweenProperty(n3d, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.4f)
+						.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In).SetDelay(delay);
+				}
+			}
+			
+			await ToSignal(GetTree().CreateTimer(0.6f), "timeout");
+			ExitCampStage();
+		};
+	}
+
+	private void SpawnCampfire(Vector3 position)
+	{
+		Node3D campfireRoot = new Node3D { Position = position };
+		AddChild(campfireRoot);
+		_campNodes.Add(campfireRoot);
+
+		Texture2D tex = GD.Load<Texture2D>("res://assets/campfire.png");
+		Sprite3D fireSprite = new Sprite3D
+		{
+			Texture = tex,
+			Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+			AlphaCut = SpriteBase3D.AlphaCutMode.OpaquePrepass,
+			PixelSize = 0.015f,
+			CastShadow = GeometryInstance3D.ShadowCastingSetting.Off 
+		};
+		
+		float targetHeight = 1.0f; 
+		float scaleFactor = targetHeight / (tex.GetHeight() * fireSprite.PixelSize);
+		Vector3 baseScale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+		
+		fireSprite.Scale = baseScale;
+		fireSprite.Position = new Vector3(0, targetHeight / 2f, 0);
+		campfireRoot.AddChild(fireSprite);
+
+		// JUICE: Pop the campfire in from nothing
+		campfireRoot.Scale = new Vector3(0.001f, 0.001f, 0.001f);
+		campfireRoot.CreateTween().TweenProperty(campfireRoot, "scale", Vector3.One, 0.6f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		// FIRE ANIMATION: Sway side to side from the base
+		fireSprite.RotationDegrees = Vector3.Zero;
+		Tween swayTween = fireSprite.CreateTween().SetLoops();
+		swayTween.TweenProperty(fireSprite, "rotation_degrees:z", 6f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		swayTween.TweenProperty(fireSprite, "rotation_degrees:z", -6f, 0.8f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		swayTween.TweenProperty(fireSprite, "rotation_degrees:z", 0f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		OmniLight3D fireLight = new OmniLight3D
+		{
+			LightColor = new Color(1f, 0.65f, 0.3f), 
+			OmniRange = 25f, 
+			LightEnergy = 3.5f, 
+			ShadowEnabled = true,
+			Position = new Vector3(0, 1.0f, 0) 
+		};
+		campfireRoot.AddChild(fireLight);
+		_ = FlickerCampfireLight(fireLight);
+
+		CpuParticles3D sparks = new CpuParticles3D
+		{
+			Amount = 12,
+			Lifetime = 1.2f,
+			EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+			EmissionSphereRadius = 0.2f,
+			Gravity = new Vector3(0, 2.0f, 0),
+			InitialVelocityMin = 0.5f,
+			InitialVelocityMax = 1.2f,
+			Color = new Color(1f, 0.8f, 0.3f, 0.8f),
+			Position = new Vector3(0, 0.3f, 0)
+		};
+		sparks.MaterialOverride = new StandardMaterial3D { ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, VertexColorUseAsAlbedo = true, Transparency = BaseMaterial3D.TransparencyEnum.Alpha };
+		campfireRoot.AddChild(sparks);
+	}
+
+	private async Task FlickerCampfireLight(OmniLight3D light)
+	{
+		var rng = new System.Random();
+		while (IsInstanceValid(light))
+		{
+			float targetEnergy = 2.5f + (float)rng.NextDouble() * 1.5f; 
+			float duration = 0.1f + (float)rng.NextDouble() * 0.2f;
+			Tween t = light.CreateTween();
+			t.TweenProperty(light, "light_energy", targetEnergy, duration).SetTrans(Tween.TransitionType.Sine);
+			await ToSignal(t, Tween.SignalName.Finished);
+		}
+	}
+
+	private void SpawnCampTrees(Vector3 campCenter)
+	{
+		var rng = new System.Random();
+		Texture2D treeTex = GD.Load<Texture2D>("res://assets/tree.png");
+
+		SpawnTreeRing(campCenter, treeTex, rng, 8, 3.0f, 5.0f);     
+		SpawnTreeRing(campCenter, treeTex, rng, 15, 6.0f, 10.0f);   
+		SpawnTreeRing(campCenter, treeTex, rng, 30, 12.0f, 25.0f);  
+	}
+
+	private void SpawnTreeRing(Vector3 center, Texture2D tex, System.Random rng, int count, float minRadius, float maxRadius)
+	{
+		for (int i = 0; i < count; i++)
+		{
+			float angle = (float)(rng.NextDouble() * Mathf.Pi * 2);
+			float radius = minRadius + (float)(rng.NextDouble() * (maxRadius - minRadius));
+			Vector3 treePos = center + new Vector3(Mathf.Cos(angle) * radius, 0, Mathf.Sin(angle) * radius);
+
+			Sprite3D treeSprite = new Sprite3D
+			{
+				Texture = tex,
+				Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+				AlphaCut = SpriteBase3D.AlphaCutMode.OpaquePrepass,
+				PixelSize = 0.015f
+			};
+
+			float targetHeight = 1.8f + (float)(rng.NextDouble() * 1.2f);
+			float scaleFactor = targetHeight / (tex.GetHeight() * treeSprite.PixelSize);
+			
+			// JUICE: Trees start at scale 0 and pop in organically
+			treeSprite.Scale = new Vector3(0.001f, 0.001f, 0.001f); 
+			treeSprite.Position = new Vector3(treePos.X, targetHeight / 2f, treePos.Z);
+			
+			treeSprite.CreateTween().TweenProperty(treeSprite, "scale", new Vector3(scaleFactor, scaleFactor, scaleFactor), 0.6f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay((float)rng.NextDouble() * 0.4f);
+
+			if (radius > 10.0f)
+			{
+				treeSprite.Modulate = new Color(0.6f, 0.6f, 0.7f, 1f); 
+			}
+
+			AddChild(treeSprite);
+			_campNodes.Add(treeSprite);
+		}
+	}
+
+	private void SpawnCampParty(Vector3 campCenter)
+	{
+		float leftOffset = 1.2f;
+		float rightOffset = 1.2f;
+		var rng = new System.Random();
+		_campSpeechBubbles.Clear();
+
+		for (int i = 0; i < _party.Count; i++)
+		{
+			PersistentUnit partyMember = _party[i];
+			bool placeOnLeft = (i % 2 == 0); 
+			Vector3 spawnPos = campCenter;
+			
+			if (placeOnLeft)
+			{
+				spawnPos.X -= leftOffset;
+				spawnPos.Z += (float)(rng.NextDouble() - 0.5) * 1.0f;
+				leftOffset += 1.2f;
+			}
+			else
+			{
+				spawnPos.X += rightOffset;
+				spawnPos.Z += (float)(rng.NextDouble() - 0.5) * 1.0f;
+				rightOffset += 1.2f;
+			}
+
+			// === INSTANTIATE THE ACTUAL UNIT ===
+			Unit u = UnitScene.Instantiate<Unit>();
+			AddChild(u);
+			u.GlobalPosition = spawnPos;
+			
+			// Setup as friendly
+			u.Setup(partyMember, true);
+			
+			// Track it for cleanup and logic
+			_units.Add(u);
+			_campNodes.Add(u);
+
+			// Make them organically turn to face the campfire!
+			_ = u.FaceDirection(campCenter);
+
+			// Hide their Combat UI (HP/XP bars) so they look relaxed
+			foreach (Node child in u.GetChildren())
+			{
+				if (child is Sprite3D spr && spr.Name != "Sprite3D") 
+					spr.Visible = false; // Hides the UI Viewport Sprite3D
+			}
+
+			// === ADD SPEECH BUBBLE ===
+			Label3D bubble = new Label3D {
+				Text = "💬",
+				FontSize = 100,
+				OutlineSize = 12,
+				OutlineModulate = Colors.Black,
+				Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+				NoDepthTest = true,
+				Position = new Vector3(0, 3.0f, 0), // Position comfortably over their head
+				Visible = false
+			};
+			u.AddChild(bubble);
+			_campSpeechBubbles[partyMember.Profile.Name] = bubble;
+
+			// Juice: Party jumps in from the sky
+			u.Position += new Vector3(0, 8f, 0);
+			u.CreateTween().TweenProperty(u, "position:y", u.Position.Y - 8f, 0.6f)
+				.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay((float)rng.NextDouble() * 0.3f);
+		}
+		
+		RefreshCampSpeechBubbles();
+	}
+
+	public void RefreshCampSpeechBubbles()
+	{
+		foreach (var kvp in _campSpeechBubbles)
+		{
+			string charName = kvp.Key;
+			Label3D bubble = kvp.Value;
+			
+			var conv = GetAvailableCampConversation(charName);
+			
+			if (conv != null && !bubble.Visible)
+			{
+				bubble.Visible = true;
+				bubble.Scale = Vector3.Zero;
+				
+				// Pop in
+				Tween t = bubble.CreateTween().SetParallel(true);
+				t.TweenProperty(bubble, "scale", Vector3.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				
+				// Continuous Bob
+				Tween bob = bubble.CreateTween().SetLoops();
+				bob.TweenProperty(bubble, "position:y", 2.0f, 0.6f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				bob.TweenProperty(bubble, "position:y", 1.8f, 0.6f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			}
+			else if (conv == null && bubble.Visible)
+			{
+				Tween t = bubble.CreateTween();
+				t.TweenProperty(bubble, "scale", Vector3.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+				t.Finished += () => bubble.Visible = false;
+			}
+		}
+	}
+
+	private void TriggerCampConversation(CampConversation conv)
+	{
+		if (conv.PlayOnce) StoryFlags["CampConv_" + conv.TimelineName] = true;
+		
+		if (_campUIRoot != null) _campUIRoot.Visible = false; 
+		
+		// Convert the raw name to the full res:// path using your constants
+		string fullPath = StoryConstants.TimelinePathPrefix + conv.TimelineName + StoryConstants.TimelineExtension;
+		StartDialogue(fullPath);
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameManager.Combat.cs]
+
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public partial class GameManager
+{
+	private List<Unit> _units = new();
+	private Unit _selectedUnit;
+	private Unit _previewedEnemy;
+	private Unit _hoveredUnit;
+	private List<Tile> _movementHighlightTiles = new();
+
+	private async void StartBattle(BattleSetup data)
+	{
+		StatsLabel.Text = "Setting up the board...";
+		await ClearBoardAsync(); 
+		ApplyEnvironment(data);
+		await SetupGridElevation(data);
+		SpawnDioramas();
+
+		foreach (var hero in _party) hero.HealBetweenBattles();
+
+		for (int i = 0; i < Mathf.Min(_party.Count, data.FriendlySpawns.Count); i++)
+		{
+			Vector3 finalPos = data.FriendlySpawns[i];
+			if (_grid.TryGetValue(GetGridPos(finalPos), out Tile tile))
+				finalPos = new Vector3(tile.Position.X, tile.Position.Y, tile.Position.Z);
+			SpawnUnit(_party[i], true, finalPos);
+		}
+
+		foreach (var e in data.Enemies) 
+		{
+			Vector3 finalPos = e.Position;
+			if (_grid.TryGetValue(GetGridPos(finalPos), out Tile tile))
+				finalPos = new Vector3(tile.Position.X, tile.Position.Y, tile.Position.Z);
+			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, finalPos);
+		}
+		
+		SpawnRandomObstacles(new System.Random().Next(8, 16));
+
+		_currentTurnNumber = 1;
+		_activeMidBattleEvents = new List<MidBattleEvent>(data.MidBattleEvents);
+		
+		await ShowTurnAnnouncer("BATTLE START", new Color(1.0f, 0.85f, 0.2f));
+		CheckMidBattleEvents();
+	}
+
+	private void SpawnUnit(PersistentUnit data, bool isFriendly, Vector3 pos)
+	{
+		Unit u = UnitScene.Instantiate<Unit>();
+		AddChild(u);
+		u.GlobalPosition = pos;
+		u.Setup(data, isFriendly);
+		u.OnDied += HandleUnitDeath; 
+		_units.Add(u);
+
+		u.Scale = new Vector3(0.001f, 0.001f, 0.001f);
+		CreateTween().TweenProperty(u, "scale", Vector3.One, 0.35f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+	}
+
+	private async Task PerformAttackAsync(Unit attacker, Unit target)
+	{
+		await attacker.FaceDirection(target.GlobalPosition);
+
+		// 1. CAPTURE ORIGINAL STATE (position only; rotation stays fixed for lateral-only movement)
+		Vector3 originalCamPos = Cam.GlobalPosition;
+		float originalFov = Cam.Fov;
+		float originalSize = Cam.Size;
+
+		// 2. CALCULATE THE "FIGHT CENTER"
+		// Mid-point between units, raised slightly for chest-height focus
+		Vector3 actionCenter = (attacker.GlobalPosition + target.GlobalPosition) / 2f + new Vector3(0, 1.0f, 0);
+
+		// 3. LATERAL-ONLY PAN: Move camera in X/Z only so actionCenter is centered in view; no rotation
+		// Camera forward in Godot is -Basis.Z
+		Vector3 forward = -Cam.GlobalTransform.Basis.Z;
+		if (forward.LengthSquared() < 0.0001f) forward = new Vector3(0, 0, -1);
+		else forward = forward.Normalized();
+		Vector3 targetCamPos;
+		if (Mathf.Abs(forward.Y) >= 0.0001f)
+		{
+			// Angled camera: place camera so center ray (at same height) passes through actionCenter
+			float t = (actionCenter.Y - originalCamPos.Y) / forward.Y;
+			targetCamPos = new Vector3(
+				actionCenter.X - t * forward.X,
+				originalCamPos.Y,
+				actionCenter.Z - t * forward.Z
+			);
+		}
+		else
+		{
+			// Top-down: pan in XZ so projected center aligns
+			Vector3 toCenter = actionCenter - originalCamPos;
+			float t = toCenter.Dot(forward) / forward.LengthSquared();
+			Vector3 delta = toCenter - (t * forward);
+			delta.Y = 0;
+			targetCamPos = originalCamPos + delta;
+		}
+
+		// 4. ZOOM & PAN IN (smooth, lateral only, no angle change)
+		Tween zoomIn = CreateTween().SetParallel(true);
+		zoomIn.TweenProperty(Cam, "global_position", targetCamPos, 0.45f)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+			zoomIn.TweenProperty(Cam, "size", originalSize * 0.85f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		else
+			zoomIn.TweenProperty(Cam, "fov", originalFov - 10f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+
+		await ToSignal(zoomIn, "finished");
+		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+
+		// 4. THE ACTION (Lunge)
+		Vector3 attackerStartPos = attacker.GlobalPosition;
+		Vector3 attackDir = (target.GlobalPosition - attackerStartPos).Normalized();
+		Vector3 lungePos = attackerStartPos + (attackDir * 0.8f);
+
+		Tween lunge = CreateTween();
+		lunge.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine);
+		lunge.TweenProperty(attacker, "global_position", attackerStartPos, 0.2f).SetTrans(Tween.TransitionType.Quad);
+
+		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
+
+		// 5. IMPACT & SHAKE
+		int damage = GD.RandRange(attacker.GetMinDamage(), attacker.GetMaxDamage());
+		SpawnFloatingText(target.GlobalPosition, damage.ToString(), new Color(1, 0.2f, 0.2f));
+		
+		var damageTask = target.TakeDamage(damage, attacker);
+		
+		// Shake the camera using local relative offsets
+		for (int i = 0; i < 6; i++) {
+			float s = 0.15f;
+			Vector3 shakeOffset = new Vector3((float)GD.RandRange(-s, s), (float)GD.RandRange(-s, s), 0);
+			Cam.HOffset = shakeOffset.X;
+			Cam.VOffset = shakeOffset.Y;
+			await ToSignal(GetTree().CreateTimer(0.03f), "timeout");
+		}
+		Cam.HOffset = 0; Cam.VOffset = 0;
+
+		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
+
+		// 6. ZOOM OUT & RESET (position and zoom only; rotation never changed)
+		Tween zoomOut = CreateTween().SetParallel(true);
+		zoomOut.TweenProperty(Cam, "global_position", originalCamPos, 0.5f)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+			zoomOut.TweenProperty(Cam, "size", originalSize, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+		else
+			zoomOut.TweenProperty(Cam, "fov", originalFov, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+
+		await ToSignal(zoomOut, "finished");
+		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+
+		// 7. FINALIZE
+		attacker.HasAttacked = true;
+		attacker.UpdateVisuals();
+		RefreshTargetIcons();
+		await damageTask; 
+	}
+
+	// Helper to calculate how much to shift the lens to "look at" a world position
+	private Vector2 GetCameraPanOffsets(Vector3 targetWorldPos)
+	{
+		// Project the world point to the camera's local space
+		Vector3 localPos = Cam.GlobalTransform.AffineInverse() * targetWorldPos;
+		// The H/V offsets in Godot 3D effectively shift the projection matrix
+		// This is a rough approximation that feels good for tactical heights
+		return new Vector2(localPos.X * 0.2f, -localPos.Y * 0.2f);
+	}
+	
+	private async void HandleUnitDeath(Unit deadUnit)
+	{
+		Input.SetCustomMouseCursor(null);
+		_units.Remove(deadUnit); 
+
+		bool enemiesAlive = _units.Any(u => IsInstanceValid(u) && !u.IsFriendly);
+		if (!enemiesAlive)
+		{
+			_currentState = State.Cutscene; 
+			ClearMovementRange();
+			ClearHover();
+			DeselectUnit();
+			ShowActions(false);
+
+			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
+			await ClearBoardAsync(); 
+			AdvanceScript(); 
+		}
+	}
+
+	private void HandleClick(Vector2 mousePos)
+	{
+		var spaceState = GetWorld3D().DirectSpaceState;
+		var from = Cam.ProjectRayOrigin(mousePos);
+		var to = from + Cam.ProjectRayNormal(mousePos) * 1000;
+		var query = PhysicsRayQueryParameters3D.Create(from, to);
+		query.CollideWithAreas = true;
+		var result = spaceState.IntersectRay(query);
+
+		if (result.Count == 0) 
+		{
+			if (_selectedUnit != null && _currentState != State.SelectingAttackTarget) DeselectUnit();
+			return;
+		}
+
+		Node collider = (Node)result["collider"];
+
+		// === CAMP CLICK LOGIC ===
+		if (_currentState == State.Camp)
+		{
+			if (collider.GetParent() is Unit campUnit) // Renamed to campUnit here!
+			{
+				string charName = campUnit.Data.Profile.Name;
+				var conv = GetAvailableCampConversation(charName);
+				if (conv != null)
+				{
+					// Reset the hover squish before triggering dialogue
+					campUnit.SetHovered(false); 
+					TriggerCampConversation(conv);
+				}
+			}
+			return; // Crucial: Stop processing clicks entirely if we are in Camp!
+		}
+
+		// === COMBAT CLICK LOGIC ===
+		if (collider.GetParent() is Unit clickedUnit)
+		{
+			if (clickedUnit.IsFriendly) SelectUnit(clickedUnit);
+			else 
+			{
+				bool canSmartAttack = _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked && GetGridDistance(_selectedUnit.GlobalPosition, clickedUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+
+				if (_currentState == State.SelectingAttackTarget || canSmartAttack)
+				{
+					ClearAttackPreview(); 
+					TryAttackTarget(clickedUnit);
+				}
+				else ShowUnitInfo(clickedUnit);
+			}
+		}
+		else if (collider.GetParent() is Tile tile)
+		{
+			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved) TryMoveTo(tile.GlobalPosition);
+		}
+	}
+
+	private async void TryAttackTarget(Unit target)
+	{
+		if (_selectedUnit == null) return;
+
+		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) <= _selectedUnit.Data.AttackRange)
+		{
+			await PerformAttackAsync(_selectedUnit, target);
+			if (_selectedUnit == null || !IsInstanceValid(_selectedUnit)) return;
+
+			CancelAttackMode();
+			UpdateStatsUI();
+			ShowActions(true);
+
+			if (_selectedUnit.HasMoved) DeselectUnit();
+		}
+	}
+
+	private void SelectUnit(Unit u)
+	{
+		if (u.HasMoved && u.HasAttacked) 
+		{
+			ShowUnitInfo(u);
+			return;
+		}
+
+		if (_selectedUnit != null && _selectedUnit != u) _selectedUnit.SetSelected(false);
+
+		_selectedUnit = u;
+		_selectedUnit.SetSelected(true);
+		
+		Node3D sprite = _selectedUnit.GetNode<Node3D>("Sprite3D");
+		if (!sprite.HasMeta("BaseScale")) sprite.SetMeta("BaseScale", sprite.Scale);
+		Vector3 baseScale = sprite.GetMeta("BaseScale").AsVector3();
+		Vector3 stretchedScale = new Vector3(baseScale.X * 0.8f, baseScale.Y * 1.3f, baseScale.Z * 0.8f);
+
+		Tween tween = CreateTween();
+		tween.TweenProperty(sprite, "scale", stretchedScale, 0.1f);
+		tween.TweenProperty(sprite, "scale", baseScale, 0.2f).SetTrans(Tween.TransitionType.Bounce);
+		
+		ShowUnitInfo(u);
+		UpdateStatsUI();
+		ShowActions(true);
+		_currentState = State.PlayerTurn;
+		RefreshTargetIcons();
+		ShowMovementRange(_selectedUnit);
+	}
+
+	private void DeselectUnit()
+	{
+		if (_selectedUnit != null)
+		{
+			_selectedUnit.SetSelected(false);
+			_selectedUnit = null;
+		}
+		UpdateStatsUI();
+		RefreshTargetIcons();
+		ClearMovementRange();
+		ClearAttackPreview();
+		Input.SetCustomMouseCursor(null);
+	}
+
+	private async void TryMoveTo(Vector3 targetPos)
+	{
+		if (_selectedUnit == null) return;
+
+		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(_selectedUnit.GlobalPosition.X / TileSize), Mathf.RoundToInt(_selectedUnit.GlobalPosition.Z / TileSize));
+		Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(targetPos.X / TileSize), Mathf.RoundToInt(targetPos.Z / TileSize));
+
+		var reachable = GetReachableTiles(startCoords, _selectedUnit.Data.Movement);
+
+		if (reachable.ContainsKey(targetCoords))
+		{
+			var path = ExtractPath(reachable, startCoords, targetCoords);
+
+			ShowActions(false);
+			RefreshTargetIcons();
+			ClearMovementRange();
+
+			await _selectedUnit.MoveAlongPath(path);
+
+			if (_selectedUnit != null)
+			{
+				CheckAutoExhaust(_selectedUnit);
+				_selectedUnit.UpdateVisuals();
+				UpdateStatsUI();
+				ShowActions(true);
+				RefreshTargetIcons();
+
+				if (_selectedUnit.HasAttacked) DeselectUnit();
+			}
+		}
+	}
+
+	private void HandleHover(Vector2 mousePos)
+	{
+		var spaceState = GetWorld3D().DirectSpaceState;
+		var from = Cam.ProjectRayOrigin(mousePos);
+		var to = from + Cam.ProjectRayNormal(mousePos) * 1000;
+		var query = PhysicsRayQueryParameters3D.Create(from, to);
+		query.CollideWithAreas = true;
+
+		var result = spaceState.IntersectRay(query);
+
+		if (result.Count == 0)
+		{
+			ClearHover();
+			ClearAttackPreview(); 
+			return;
+		}
+
+		Node collider = (Node)result["collider"];
+		Tile targetTile = null;
+		Unit newlyHoveredUnit = null;
+
+		if (collider.GetParent() is Unit u) 
+		{
+			newlyHoveredUnit = u;
+			Vector2I gridPos = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+			if (_grid.TryGetValue(gridPos, out Tile underlyingTile)) targetTile = underlyingTile;
+		}
+		else if (collider.GetParent() is Tile tile) targetTile = tile;
+
+		if (newlyHoveredUnit != _hoveredUnit)
+		{
+			if (_hoveredUnit != null && IsInstanceValid(_hoveredUnit)) 
+				_hoveredUnit.SetHovered(false);
+			
+			ClearAttackPreview();
+			_hoveredUnit = newlyHoveredUnit;
+			
+			if (_hoveredUnit != null)
+			{
+				// === CAMP HOVER LOGIC ===
+				if (_currentState == State.Camp)
+				{
+					string charName = _hoveredUnit.Data.Profile.Name;
+					var conv = GetAvailableCampConversation(charName);
+					
+					// Only trigger the juicy hover bounce if they want to talk
+					if (conv != null)
+					{
+						_hoveredUnit.SetHovered(true);
+						// Optional: Change the cursor to indicate they can be clicked
+						if (AttackCursorIcon != null) 
+							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					}
+				}
+				// === COMBAT HOVER LOGIC ===
+				else 
+				{
+					bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null && !_selectedUnit.HasAttacked && 
+										(_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn) && 
+										GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+					
+					_hoveredUnit.SetHovered(true, isTargetable);
+
+					if (isTargetable)
+					{
+						_previewedEnemy = _hoveredUnit;
+						_previewedEnemy.PreviewDamage(_selectedUnit.GetMinDamage());
+						
+						if (_currentState == State.PlayerTurn && AttackCursorIcon != null)
+							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					}
+				}
+			}
+		}
+
+		if (targetTile != _hoveredTile)
+		{
+			ClearHover();                  
+			_hoveredTile = targetTile;
+
+			if (_hoveredTile != null && _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
+			{
+				bool canMoveHere = _movementHighlightTiles.Contains(_hoveredTile);
+				if (canMoveHere) _hoveredTile.SetHighlight(true, new Color(0f, 1f, 0f, 0.7f)); 
+			}
+		}
+	}
+
+	private void ClearHover()
+	{
+		if (_hoveredTile != null)
+		{
+			if (_movementHighlightTiles.Contains(_hoveredTile)) 
+				_hoveredTile.SetHighlight(true, new Color(0.35f, 0.72f, 1.0f, 0.28f));
+			else 
+				_hoveredTile.SetHighlight(false); 
+			_hoveredTile = null;
+		}
+	}
+
+	private async void StartEnemyTurn()
+	{
+		_currentState = State.EnemyTurn;
+		ShowActions(false);
+		DeselectUnit();
+		ClearMovementRange();
+		RefreshTargetIcons();
+		if (StatsLabel != null) StatsLabel.Text = "Enemy Turn...";
+
+		_ = ShowTurnAnnouncer("ENEMY TURN", new Color(1.0f, 0.2f, 0.2f));
+		await ToSignal(GetTree().CreateTimer(1.5f), "timeout");
+
+		var enemies = _units.Where(x => IsInstanceValid(x) && !x.IsFriendly).ToList();
+
+		foreach (var enemy in enemies)
+		{
+			if (!IsInstanceValid(enemy)) continue;
+
+			var players = _units.Where(x => IsInstanceValid(x) && x.IsFriendly).ToList();
+			if (players.Count == 0) break; 
+
+			Unit bestTarget = null;
+			Vector3 bestMovePos = enemy.GlobalPosition;
+			float bestScore = -9999f; 
+
+			Vector2I enemyCoords = new Vector2I(Mathf.RoundToInt(enemy.GlobalPosition.X / TileSize), Mathf.RoundToInt(enemy.GlobalPosition.Z / TileSize));
+			var reachable = GetReachableTiles(enemyCoords, enemy.Data.Movement);
+			reachable[enemyCoords] = enemyCoords;
+
+			foreach (var player in players)
+			{
+				float targetScore = 0;
+				Vector3 optimalTile = enemy.GlobalPosition;
+				bool canAttackThisTurn = false;
+				int distToPlayer = GetGridDistance(enemy.GlobalPosition, player.GlobalPosition);
+
+				if (distToPlayer <= enemy.Data.AttackRange) canAttackThisTurn = true;
+				else
+				{
+					int closestWeCanGet = distToPlayer;
+					foreach (var tilePos in reachable.Keys)
+					{
+						Vector3 worldPos = new Vector3(tilePos.X * TileSize, 0.01f, tilePos.Y * TileSize);
+						int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
+						
+						if (distFromTileToPlayer <= enemy.Data.AttackRange)
+						{
+							canAttackThisTurn = true;
+							optimalTile = worldPos;
+							break; 
+						}
+						else if (distFromTileToPlayer < closestWeCanGet)
+						{
+							closestWeCanGet = distFromTileToPlayer;
+							optimalTile = worldPos;
+						}
+					}
+				}
+
+				if (canAttackThisTurn) targetScore += 1000;
+				targetScore -= player.Data.CurrentHP * 10; 
+				if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.AttackDamage) targetScore += 2000; 
+				targetScore -= distToPlayer;
+
+				if (targetScore > bestScore)
+				{
+					bestScore = targetScore;
+					bestTarget = player;
+					bestMovePos = optimalTile;
+				}
+			}
+			
+			if (bestMovePos != enemy.GlobalPosition)
+			{
+				Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(bestMovePos.X / TileSize), Mathf.RoundToInt(bestMovePos.Z / TileSize));
+				var path = ExtractPath(reachable, enemyCoords, targetCoords);
+				await enemy.MoveAlongPath(path);
+			}
+
+			if (bestTarget != null && GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.Data.AttackRange)
+			{
+				await PerformAttackAsync(enemy, bestTarget); 
+				if (_currentState != State.EnemyTurn) return;
+				await ToSignal(GetTree().CreateTimer(0.4f), "timeout"); 
+			}
+			
+			enemy.HasMoved = true;
+			enemy.HasAttacked = true;
+			enemy.UpdateVisuals();
+		}
+
+		foreach (var u in _units.Where(x => IsInstanceValid(x) && x.IsFriendly)) u.NewTurn();
+		
+		_currentTurnNumber++;
+		CheckMidBattleEvents();
+	}
+
+	private void OnEndTurnPressed() 
+	{ 
+		if (_currentState != State.PlayerTurn || _levelUpActive) return; 
+		if (!_units.Any(u => IsInstanceValid(u) && !u.IsFriendly)) return;
+		StartEnemyTurn(); 
+	}
+
+	private void ShowMovementRange(Unit u)
+	{
+		ClearMovementRange();
+		if (u == null || u.HasMoved) return;
+
+		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+		var reachable = GetReachableTiles(startCoords, u.Data.Movement);
+		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
+		
+		foreach (var kvp in reachable)
+		{
+			if (kvp.Key == startCoords) continue;
+			if (_grid.TryGetValue(kvp.Key, out Tile tile))
+			{
+				tile.SetHighlight(true, moveColor);
+				_movementHighlightTiles.Add(tile);
+			}
+		}
+	}
+
+	private void CheckAutoExhaust(Unit u)
+	{
+		if (!u.IsFriendly || u.HasAttacked) return;
+
+		bool enemyInRange = _units.Any(enemy => !enemy.IsFriendly && IsInstanceValid(enemy) && GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.Data.AttackRange);
+		if (!enemyInRange)
+		{
+			u.HasAttacked = true;
+			u.UpdateVisuals();
+		}
+	}
+
+	private int GetGridDistance(Vector3 posA, Vector3 posB)
+	{
+		int ax = Mathf.RoundToInt(posA.X / TileSize);
+		int az = Mathf.RoundToInt(posA.Z / TileSize);
+		int bx = Mathf.RoundToInt(posB.X / TileSize);
+		int bz = Mathf.RoundToInt(posB.Z / TileSize);
+		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
+	}
+
+	private void RefreshTargetIcons()
+	{
+		foreach (var u in _units)
+		{
+			if (!IsInstanceValid(u)) continue;
+			u.SetTargetable(false); 
+
+			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
+			{
+				if (!u.IsFriendly && GetGridDistance(_selectedUnit.GlobalPosition, u.GlobalPosition) <= _selectedUnit.Data.AttackRange)
+					u.SetTargetable(true);
+			}
+		}
+	}
+
+	private void ClearMovementRange()
+	{
+		foreach (var t in _movementHighlightTiles) t.SetHighlight(false);
+		_movementHighlightTiles.Clear();
+	}
+
+	private void ClearAttackPreview()
+	{
+		if (_previewedEnemy != null) 
+		{ 
+			if (IsInstanceValid(_previewedEnemy)) _previewedEnemy.ClearPreview(); 
+			_previewedEnemy = null; 
+		}
+		if (_currentState != State.SelectingAttackTarget) Input.SetCustomMouseCursor(null);
+	}
+
+	private System.Collections.Generic.Dictionary<Vector2I, Vector2I> GetReachableTiles(Vector2I start, int maxMovement)
+	{
+		var frontier = new System.Collections.Generic.Queue<Vector2I>();
+		var cameFrom = new System.Collections.Generic.Dictionary<Vector2I, Vector2I>();
+		var costSoFar = new System.Collections.Generic.Dictionary<Vector2I, int>();
+
+		frontier.Enqueue(start);
+		cameFrom[start] = start;
+		costSoFar[start] = 0;
+
+		Vector2I[] directions = {
+			new Vector2I(1, 0), new Vector2I(-1, 0), new Vector2I(0, 1), new Vector2I(0, -1),
+			new Vector2I(1, 1), new Vector2I(-1, -1), new Vector2I(1, -1), new Vector2I(-1, 1)
+		};
+
+		while (frontier.Count > 0)
+		{
+			var current = frontier.Dequeue();
+
+			foreach (var dir in directions)
+			{
+				var next = current + dir;
+				int newCost = costSoFar[current] + 1;
+
+				if (newCost > maxMovement) continue;
+				if (!_grid.ContainsKey(next)) continue;
+				if (!IsTileFree(next)) continue;
+
+				if (!costSoFar.ContainsKey(next) || newCost < costSoFar[next])
+				{
+					costSoFar[next] = newCost;
+					cameFrom[next] = current;
+					frontier.Enqueue(next);
+				}
+			}
+		}
+		return cameFrom;
+	}
+
+	private System.Collections.Generic.List<Vector3> ExtractPath(System.Collections.Generic.Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I end)
+	{
+		var path = new System.Collections.Generic.List<Vector3>();
+		var current = end;
+		while (current != start)
+		{
+			float height = _grid.ContainsKey(current) ? _grid[current].Position.Y : 0.01f;
+			path.Add(new Vector3(current.X * TileSize, height, current.Y * TileSize));
+			current = cameFrom[current];
+		}
+		path.Reverse(); 
+		return path;
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameManager.Environment.cs]
+
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public partial class GameManager
+{
+	private Godot.Collections.Dictionary<Vector2I, Tile> _grid = new();
+	private List<Node3D> _obstacles = new();
+	private List<Node3D> _activeDioramas = new();
+	private List<OmniLight3D> _nightLights = new();
+	private MeshInstance3D _backgroundPlane;
+	private Tile _hoveredTile;
+
+	private const float TileSize = 2f;
+	private const int GridWidth = 10;
+	private const int GridDepth = 10;
+
+	private void GenerateGrid()
+	{
+		// JUICE: Make the grid spawn in a wave pattern instead of popping in!
+		Tween spawnTween = CreateTween().SetParallel(true);
+
+		for (int x = 0; x < GridWidth; x++)
+		{
+			for (int z = 0; z < GridDepth; z++)
+			{
+				Tile tile = TileScene.Instantiate<Tile>();
+				AddChild(tile);
+				tile.Setup(new Vector2I(x, z), TileSize);
+				
+				// Start invisible/tiny
+				tile.Scale = new Vector3(0.001f, 0.001f, 0.001f); 
+				
+				Vector3 targetScale = new Vector3(0.96f, 1.0f, 0.96f);
+				
+				// Calculate a wave delay starting from the corner
+				float delay = (x + z) * 0.03f; 
+				
+				spawnTween.TweenProperty(tile, "scale", targetScale, 0.5f)
+					.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(delay);
+
+				_grid[new Vector2I(x, z)] = tile;
+			}
+		}
+	}
+
+	private Vector2I GetGridPos(Vector3 pos) => new Vector2I(Mathf.RoundToInt(pos.X / TileSize), Mathf.RoundToInt(pos.Z / TileSize));
+
+	private bool IsTileFree(Vector2I gridPos)
+	{
+		foreach (var u in _units) if (IsInstanceValid(u) && GetGridPos(u.GlobalPosition) == gridPos) return false;
+		foreach (var obs in _obstacles) if (IsInstanceValid(obs) && GetGridPos(obs.GlobalPosition) == gridPos) return false;
+		return true;
+	}
+
+	private void ApplyEnvironment(BattleSetup data)
+	{
+		if (MainLight != null && WorldEnv != null)
+		{
+			if (WorldEnv.Environment == null) WorldEnv.Environment = new Godot.Environment();
+			Godot.Environment env = WorldEnv.Environment;
+
+			if (Cam != null) Cam.Environment = env;
+			
+			env.BackgroundMode = Godot.Environment.BGMode.Color;
+			env.AmbientLightSource = Godot.Environment.AmbientSource.Color;
+
+			env.TonemapMode = Godot.Environment.ToneMapper.Aces;
+			env.TonemapExposure = 1.05f; 
+			env.AdjustmentEnabled = true;
+			env.AdjustmentContrast = 1.05f; 
+			env.AdjustmentSaturation = 1.1f;
+			
+			env.GlowEnabled = true; 
+			env.GlowHdrThreshold = 0.9f; 
+			env.GlowIntensity = 0.8f; 
+			env.GlowStrength = 0.9f;
+			env.GlowBloom = 0.0f;
+			env.GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive;
+			
+			env.SsaoEnabled = true; 
+			env.SsaoRadius = 1.0f;
+			env.SsaoIntensity = 1.5f;
+			env.SsilEnabled = true; 
+
+			env.FogEnabled = true;
+			env.VolumetricFogEnabled = true; 
+			env.VolumetricFogDensity = 0.005f;
+
+			switch (data.Light)
+			{
+				case LightingMood.Noon:
+					MainLight.Visible = true;
+					MainLight.LightColor = new Color(1f, 0.98f, 0.95f);
+					MainLight.LightEnergy = 1.2f;
+					MainLight.RotationDegrees = new Vector3(-75, 45, 0);
+					env.BackgroundColor = new Color(0.4f, 0.6f, 0.9f); 
+					env.AmbientLightColor = new Color(0.6f, 0.8f, 1f);   
+					env.AmbientLightEnergy = 0.5f;
+					env.FogLightColor = env.BackgroundColor;
+					env.VolumetricFogAlbedo = new Color(0.6f, 0.75f, 1.0f);
+					break;
+				case LightingMood.Morning:
+					MainLight.Visible = true;
+					MainLight.LightColor = new Color(1f, 0.85f, 0.65f);   
+					MainLight.LightEnergy = 1.2f;
+					MainLight.RotationDegrees = new Vector3(-25, 60, 0); 
+					env.BackgroundColor = new Color(0.8f, 0.5f, 0.4f); 
+					env.AmbientLightColor = new Color(0.9f, 0.6f, 0.7f); 
+					env.AmbientLightEnergy = 0.4f;
+					env.FogLightColor = env.BackgroundColor; 
+					env.VolumetricFogAlbedo = new Color(0.9f, 0.6f, 0.5f);
+					break;
+				case LightingMood.Night:
+					MainLight.Visible = true;
+					MainLight.LightColor = new Color(0.5f, 0.6f, 0.9f);  
+					MainLight.LightEnergy = 0.6f;
+					MainLight.RotationDegrees = new Vector3(-60, -30, 0);
+					env.BackgroundColor = new Color(0.08f, 0.08f, 0.12f); 
+					env.AmbientLightColor = new Color(0.2f, 0.3f, 0.5f); 
+					env.AmbientLightEnergy = 0.8f;
+					env.FogLightColor = env.BackgroundColor; 
+					env.VolumetricFogAlbedo = new Color(0.15f, 0.15f, 0.25f);
+					SpawnNightCornerLights(); 
+					break;
+				case LightingMood.Indoors:
+					MainLight.Visible = false; 
+					env.BackgroundColor = new Color(0.02f, 0.02f, 0.02f); 
+					env.AmbientLightColor = new Color(0.8f, 0.7f, 0.5f); 
+					env.AmbientLightEnergy = 0.8f;
+					env.FogLightColor = env.BackgroundColor;
+					env.VolumetricFogAlbedo = new Color(0.05f, 0.04f, 0.03f); 
+					env.VolumetricFogDensity = 0.08f;
+					break;
+			}
+		}
+
+		StandardMaterial3D groundMaterial = new StandardMaterial3D();
+		FastNoiseLite noise = new FastNoiseLite { NoiseType = FastNoiseLite.NoiseTypeEnum.Simplex, Frequency = 0.03f };
+		NoiseTexture2D normalTex = new NoiseTexture2D { Noise = noise, AsNormalMap = true, BumpStrength = 3.0f };
+		groundMaterial.NormalEnabled = true;
+		groundMaterial.NormalTexture = normalTex;
+
+		switch (data.Ground)
+		{
+			case GroundType.Grass: groundMaterial.AlbedoColor = new Color(0.2f, 0.35f, 0.15f); groundMaterial.Roughness = 0.95f; break;
+			case GroundType.Dirt: groundMaterial.AlbedoColor = new Color(0.3f, 0.22f, 0.15f); groundMaterial.Roughness = 1.0f; break;
+			case GroundType.Marble: groundMaterial.AlbedoColor = new Color(0.85f, 0.85f, 0.9f); groundMaterial.Roughness = 0.15f; break;
+		}
+
+		foreach (var tile in _grid.Values)
+		{
+			if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh)
+			{
+				mesh.MaterialOverride = null; 
+				mesh.SetSurfaceOverrideMaterial(0, (StandardMaterial3D)groundMaterial.Duplicate());
+			}
+		}
+		
+		if (_backgroundPlane == null)
+		{
+			_backgroundPlane = new MeshInstance3D();
+			PlaneMesh plane = new PlaneMesh { Size = new Vector2(300, 300) };
+			_backgroundPlane.Mesh = plane;
+			_backgroundPlane.Position = new Vector3((GridWidth * TileSize) / 2f, -0.05f, (GridDepth * TileSize) / 2f);
+			AddChild(_backgroundPlane);
+		}
+
+		StandardMaterial3D planeMat = (StandardMaterial3D)groundMaterial.Duplicate();
+		planeMat.Uv1Scale = new Vector3(150, 150, 1);
+		_backgroundPlane.MaterialOverride = planeMat;
+	}
+
+	private async Task SetupGridElevation(BattleSetup data)
+	{
+		FastNoiseLite noise = new FastNoiseLite { NoiseType = FastNoiseLite.NoiseTypeEnum.Simplex, Seed = (int)GD.Randi(), Frequency = 0.15f };
+		Tween riseTween = CreateTween();
+		riseTween.SetParallel(true);
+		bool rising = false;
+
+		foreach (var kvp in _grid)
+		{
+			Vector2I pos = kvp.Key; Tile tile = kvp.Value;
+			float targetHeight = 0.01f;
+
+			if (data.ElevationEnabled)
+			{
+				int distX = Mathf.Min(pos.X, GridWidth - 1 - pos.X);
+				int distZ = Mathf.Min(pos.Y, GridDepth - 1 - pos.Y);
+				int distToEdge = Mathf.Min(distX, distZ);
+
+				if (distToEdge > 0)
+				{
+					float rawNoise = (noise.GetNoise2D(pos.X, pos.Y) + 1f) / 2f; 
+					float falloff = distToEdge == 1 ? 0.4f : 1.0f; 
+					targetHeight = 0.01f + (rawNoise * 0.7f * falloff); 
+				}
+			}
+
+			if (Mathf.Abs(tile.Position.Y - targetHeight) > 0.001f)
+			{
+				rising = true;
+				float delay = (float)GD.RandRange(0.0f, 0.2f);
+				riseTween.TweenProperty(tile, "position:y", targetHeight, 0.5f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay(delay);
+				
+				if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh && mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
+				{
+					float heightRatio = Mathf.Clamp(targetHeight / 0.75f, 0f, 1f);
+					Color baseColor = mat.AlbedoColor;
+					Color highlightColor = new Color(baseColor.R * 1.35f, baseColor.G * 1.35f, baseColor.B * 1.15f, baseColor.A);
+					Color finalColor = baseColor.Lerp(highlightColor, heightRatio);
+					riseTween.TweenProperty(mat, "albedo_color", finalColor, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out).SetDelay(delay);
+				}
+			}
+		}
+
+		if (rising) await ToSignal(GetTree().CreateTimer(0.7f), "timeout");
+		else riseTween.Kill(); 
+	}
+
+	private void SpawnDioramas()
+	{
+		if (BackgroundDioramas == null || BackgroundDioramas.Count == 0) return;
+
+		float gridSize = GridWidth * TileSize;
+		Vector3 center = new Vector3((GridWidth - 1) * TileSize / 2f, 0, (GridDepth - 1) * TileSize / 2f);
+		Vector3 camDir = (Cam.GlobalPosition - center);
+		camDir.Y = 0; camDir = camDir.Normalized();
+
+		Vector3[] compassDirs = { new Vector3(0, 0, -1), new Vector3(0, 0, 1), new Vector3(1, 0, 0), new Vector3(-1, 0, 0) };
+		System.Random rnd = new System.Random();
+		List<Vector3> bgDirs = new List<Vector3>();
+		List<(Vector3 pos, bool isBg)> slotsToSpawn = new();
+
+		foreach (Vector3 dir in compassDirs)
+		{
+			bool isBg = dir.Dot(camDir) < -0.1f;
+			float gap = isBg ? 0.5f : 4.0f;
+			slotsToSpawn.Add((center + (dir * (gridSize + gap)), isBg));
+			if (isBg) bgDirs.Add(dir);
+		}
+
+		if (bgDirs.Count == 2) slotsToSpawn.Add((center + (bgDirs[0] * (gridSize + 0.5f)) + (bgDirs[1] * (gridSize + 0.5f)), true)); 
+
+		foreach (var slot in slotsToSpawn)
+		{
+			Node3D dioramaParent = new Node3D { Position = new Vector3(slot.pos.X, 0, slot.pos.Z) };
+			AddChild(dioramaParent);
+			_activeDioramas.Add(dioramaParent);
+
+			if (slot.isBg)
+			{
+				float subSquareSize = (gridSize / 2f) - 0.5f;
+				float subRadius = gridSize / 4f;
+				Vector3[] subOffsets = { new Vector3(-subRadius, 0, -subRadius), new Vector3(subRadius, 0, -subRadius), new Vector3(-subRadius, 0, subRadius), new Vector3(subRadius, 0, subRadius) };
+
+				foreach (Vector3 subOff in subOffsets)
+				{
+					Node3D model = InstantiateAndScaleRandomModel(rnd, subSquareSize, out _);
+					model.Position = subOff; model.RotationDegrees = new Vector3(0, rnd.Next(0, 4) * 90, 0);
+					dioramaParent.AddChild(model);
+				}
+			}
+			else
+			{
+				Node3D model = InstantiateAndScaleRandomModel(rnd, gridSize, out float scaledHeight);
+				dioramaParent.AddChild(model);
+				dioramaParent.Position = new Vector3(slot.pos.X, -(scaledHeight * 0.88f), slot.pos.Z);
+			}
+
+			dioramaParent.Scale = Vector3.Zero;
+			CreateTween().TweenProperty(dioramaParent, "scale", Vector3.One, 0.7f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay((float)GD.RandRange(0.0f, 0.4f));
+		}
+	}
+
+	private Node3D InstantiateAndScaleRandomModel(System.Random rnd, float targetSquareSize, out float finalScaledHeight)
+	{
+		PackedScene randomScene = BackgroundDioramas[rnd.Next(BackgroundDioramas.Count)];
+		Node3D model = randomScene.Instantiate<Node3D>();
+		Aabb bounds = new Aabb(); bool first = true;
+		
+		foreach (Node child in model.FindChildren("*", "MeshInstance3D", true, false))
+		{
+			if (child is MeshInstance3D meshInstance)
+			{
+				Aabb transformedAabb = meshInstance.Transform * meshInstance.GetAabb();
+				if (first) { bounds = transformedAabb; first = false; }
+				else bounds = bounds.Merge(transformedAabb);
+			}
+		}
+
+		float maxBaseDimension = Mathf.Max(bounds.Size.X, bounds.Size.Z);
+		if (maxBaseDimension == 0) maxBaseDimension = 1f; 
+
+		float targetScaleFactor = targetSquareSize / maxBaseDimension;
+		model.Scale = new Vector3(targetScaleFactor, targetScaleFactor, targetScaleFactor);
+		finalScaledHeight = bounds.Size.Y * targetScaleFactor;
+		return model;
+	}
+
+	private void SpawnNightCornerLights()
+	{
+		float height = 8.0f; float maxX = (GridWidth - 1) * TileSize; float maxZ = (GridDepth - 1) * TileSize;
+		Vector3[] corners = { new Vector3(0, height, 0), new Vector3(maxX, height, 0), new Vector3(0, height, maxZ), new Vector3(maxX, height, maxZ) };
+
+		foreach (var pos in corners)
+		{
+			OmniLight3D light = new OmniLight3D { LightColor = new Color(0.6f, 0.7f, 1.0f), OmniRange = 45.0f, OmniAttenuation = 0.8f, ShadowEnabled = false, Position = pos };
+			AddChild(light);
+			_nightLights.Add(light);
+			light.LightEnergy = 0f;
+			CreateTween().TweenProperty(light, "light_energy", 1.2f, 1.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+	}
+
+	private void StartAmbientCloudSystem()
+	{
+		if (!IsInsideTree()) return;
+		
+		SpawnProceduralCloud();
+		
+		if (_cloudTimer != null && IsInstanceValid(_cloudTimer))
+		{
+			// Shorter wait time for regular, steady, one-by-one spawning
+			_cloudTimer.WaitTime = (float)GD.RandRange(1.0f, 2.5f);
+			_cloudTimer.Start();
+		}
+	}
+
+	private void SpawnProceduralCloud()
+	{
+		// 1. PATH MATH: Calculate left-to-right relative to the CAMERA, not the world grid
+		Vector3 camRight = Cam.GlobalTransform.Basis.X;
+		camRight.Y = 0; // Keep the flight path perfectly flat
+		camRight = camRight.Normalized();
+		
+		// Pick a random spot floating somewhere over the grid to act as the "center" of our path
+		Vector3 midPoint = new Vector3(
+			(float)GD.RandRange(0f, GridWidth * TileSize),
+			(float)GD.RandRange(2.0f, 4.5f),
+			(float)GD.RandRange(0f, GridDepth * TileSize)
+		);
+		
+		// Create a flight path that spans across the screen
+		float travelDist = 45f; 
+		Vector3 startPos = midPoint - (camRight * (travelDist / 2f)); // Way off-screen left
+		Vector3 endPos = midPoint + (camRight * (travelDist / 2f));   // Way off-screen right
+
+		// 2. THE PARENT (Handles the linear left-to-right travel)
+		Node3D gustParent = new Node3D();
+		gustParent.Position = startPos;
+		AddChild(gustParent);
+
+		// 3. THE MESH (Handles the shape, look, and swiveling)
+		MeshInstance3D windGust = new MeshInstance3D();
+		windGust.Mesh = new SphereMesh { Radius = 1.0f, Height = 1.0f }; 
+		
+		windGust.MaterialOverride = new StandardMaterial3D { 
+			AlbedoColor = new Color(1f, 1f, 1f, 0.35f),
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+			NoDepthTest = true, // THE FIX: This forces the cloud to draw ON TOP of all 3D objects!
+			RenderPriority = 1, // Ensures it draws after standard elements
+			DistanceFadeMode = BaseMaterial3D.DistanceFadeModeEnum.PixelAlpha, 
+			DistanceFadeMaxDistance = 15f, 
+			DistanceFadeMinDistance = 5f 
+		};
+		windGust.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+		
+		windGust.RotationDegrees = new Vector3(0, (float)GD.RandRange(-30, 30), (float)GD.RandRange(-15, 15));
+		gustParent.AddChild(windGust);
+
+		// 4. SLOW, LAZY MOVEMENT TWEEN
+		float duration = (float)GD.RandRange(12f, 20f);
+		Tween moveTween = CreateTween().SetParallel(true);
+		
+		// Move the PARENT from startPos to endPos across the screen
+		moveTween.TweenProperty(gustParent, "position", endPos, duration)
+			.SetTrans(Tween.TransitionType.Linear);
+			
+		// Sine wave on the CHILD'S local Z and Y for a bobbing feel (so it doesn't fight the parent's movement)
+		moveTween.TweenProperty(windGust, "position:z", (float)GD.RandRange(-3f, 3f), duration)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		moveTween.TweenProperty(windGust, "position:y", (float)GD.RandRange(-1.5f, 1.5f), duration)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		// Smoothly fade/scale in and out
+		gustParent.Scale = Vector3.Zero;
+		moveTween.TweenProperty(gustParent, "scale", Vector3.One, 2.0f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		moveTween.TweenProperty(gustParent, "scale", Vector3.Zero, 2.0f)
+			.SetDelay(duration - 2.0f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+
+		// 5. INFINITE MORPHING TWEEN
+		Tween shapeTween = CreateTween().SetLoops(); 
+		float morphSpeed = duration / 3f; 
+		
+		Vector3 morphScale1 = new Vector3((float)GD.RandRange(3.0f, 5.0f), (float)GD.RandRange(0.2f, 0.5f), (float)GD.RandRange(1.0f, 2.0f));
+		Vector3 morphScale2 = new Vector3((float)GD.RandRange(2.0f, 3.5f), (float)GD.RandRange(0.4f, 0.8f), (float)GD.RandRange(1.5f, 3.0f));
+		
+		Vector3 rot1 = windGust.RotationDegrees + new Vector3((float)GD.RandRange(-20, 20), (float)GD.RandRange(-45, 45), (float)GD.RandRange(-10, 10));
+		Vector3 rot2 = windGust.RotationDegrees + new Vector3((float)GD.RandRange(-20, 20), (float)GD.RandRange(-45, 45), (float)GD.RandRange(-10, 10));
+
+		shapeTween.TweenProperty(windGust, "scale", morphScale1, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		shapeTween.Parallel().TweenProperty(windGust, "rotation_degrees", rot1, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		
+		shapeTween.TweenProperty(windGust, "scale", morphScale2, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		shapeTween.Parallel().TweenProperty(windGust, "rotation_degrees", rot2, morphSpeed).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		moveTween.Finished += () => {
+			shapeTween.Kill(); 
+			gustParent.QueueFree();
+		};
+	}
+
+	private void SpawnRandomObstacles(int obstacleCount)
+	{
+		List<Vector2I> validTiles = _grid.Keys.Where(IsTileFree).ToList();
+		System.Random rnd = new System.Random();
+		validTiles = validTiles.OrderBy(x => rnd.Next()).ToList();
+
+		int spawned = 0;
+		foreach (var gridPos in validTiles)
+		{
+			if (spawned >= obstacleCount) break;
+			SpawnObstacle(new Vector3(gridPos.X * TileSize, _grid[gridPos].Position.Y, gridPos.Y * TileSize), rnd.Next(2) == 0);
+			spawned++;
+		}
+	}
+
+	private void SpawnObstacle(Vector3 pos, bool isTall)
+	{
+		Node3D obsNode = new Node3D(); 
+		Sprite3D sprite = new Sprite3D { Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, AlphaCut = SpriteBase3D.AlphaCutMode.OpaquePrepass };
+		
+		Texture2D tex = isTall ? GD.Load<Texture2D>("res://assets/tree.png") : GD.Load<Texture2D>("res://assets/rock.png");
+		float targetHeight = isTall ? 1.8f : 0.9f; 
+
+		sprite.Texture = tex;
+		float scaleFactor = targetHeight / (tex.GetHeight() * sprite.PixelSize);
+		sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+		sprite.Position = new Vector3(0, targetHeight / 2.0f, 0);
+
+		obsNode.AddChild(sprite);
+		AddChild(obsNode);
+		_obstacles.Add(obsNode);
+		
+		obsNode.GlobalPosition = pos;
+		obsNode.Scale = Vector3.Zero;
+		CreateTween().TweenProperty(obsNode, "scale", Vector3.One, 0.4f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+	}
+
+	private async Task ClearBoardAsync()
+	{
+		DeselectUnit();
+
+		foreach (var u in _units.Where(IsInstanceValid)) { Tween t = CreateTween(); t.TweenProperty(u, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); t.Finished += () => u.QueueFree(); }
+		_units.Clear();
+		
+		foreach (var obs in _obstacles.Where(IsInstanceValid)) { Tween t = CreateTween(); t.TweenProperty(obs, "scale", Vector3.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); t.Finished += () => obs.QueueFree(); }
+		_obstacles.Clear();
+		
+		foreach (var diorama in _activeDioramas.Where(IsInstanceValid)) { Tween t = CreateTween(); t.TweenProperty(diorama, "scale", Vector3.Zero, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); t.Finished += () => diorama.QueueFree(); }
+		_activeDioramas.Clear();
+		
+		foreach (var light in _nightLights.Where(IsInstanceValid)) { Tween t = CreateTween(); t.TweenProperty(light, "light_energy", 0.0f, 0.35f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In); t.Finished += () => light.QueueFree(); }
+		_nightLights.Clear();
+		
+		Tween flattenTween = CreateTween();
+		flattenTween.SetParallel(true);
+		bool hasElevatedTiles = false;
+
+		foreach (var tile in _grid.Values)
+		{
+			if (tile.Position.Y > 0.02f)
+			{
+				hasElevatedTiles = true;
+				float delay = (float)GD.RandRange(0.0f, 0.15f);
+				flattenTween.TweenProperty(tile, "position:y", 0.01f, 0.4f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out).SetDelay(delay);
+				
+				if (tile.GetNodeOrNull<MeshInstance3D>("MeshInstance3D") is MeshInstance3D mesh && mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
+				{
+					Color darkColor = new Color(mat.AlbedoColor.R * 0.75f, mat.AlbedoColor.G * 0.75f, mat.AlbedoColor.B * 0.85f, mat.AlbedoColor.A);
+					flattenTween.TweenProperty(mat, "albedo_color", darkColor, 0.4f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In).SetDelay(delay);
+				}
+			}
+		}
+
+		if (hasElevatedTiles) await ToSignal(GetTree().CreateTimer(0.6f), "timeout"); 
+		else { flattenTween.Kill(); await ToSignal(GetTree().CreateTimer(0.25f), "timeout"); }
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameManager.UI.cs]
+
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public partial class GameManager
+{
+	private void SetupUnifiedUI()
+	{
+		StyleBoxFlat baseStyle = new StyleBoxFlat {
+			BgColor = new Color(0.08f, 0.08f, 0.1f, 0.95f),
+			CornerRadiusTopLeft = 16, CornerRadiusTopRight = 16, CornerRadiusBottomLeft = 16, CornerRadiusBottomRight = 16,
+			BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4,
+			BorderColor = new Color(0.3f, 0.3f, 0.35f, 1f),
+			ContentMarginLeft = 24, ContentMarginRight = 24, ContentMarginTop = 16, ContentMarginBottom = 16,
+			ShadowColor = new Color(0, 0, 0, 0.7f), ShadowSize = 8, ShadowOffset = new Vector2(0, 6)
+		};
+		BaseUIStyle = baseStyle;
+
+		BadgeStyle = new StyleBoxFlat {
+			BgColor = new Color(0.6f, 0.1f, 0.1f, 0.95f), 
+			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 8, 
+			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+			BorderColor = new Color(0.9f, 0.4f, 0.4f, 1f),
+			ContentMarginLeft = 16, ContentMarginRight = 16, ContentMarginTop = 4, ContentMarginBottom = 4,
+			ShadowColor = new Color(0, 0, 0, 0.5f), ShadowSize = 4, ShadowOffset = new Vector2(0, 3)
+		};
+
+		StyleBoxFlat btnNormal = (StyleBoxFlat)baseStyle.Duplicate();
+		StyleBoxFlat btnHover = (StyleBoxFlat)baseStyle.Duplicate();
+		btnHover.BgColor = new Color(0.18f, 0.18f, 0.22f, 1f); btnHover.BorderColor = new Color(1f, 0.85f, 0.3f, 1f); 
+		btnHover.ShadowSize = 14; btnHover.ShadowOffset = new Vector2(0, 10);
+		StyleBoxFlat btnPressed = (StyleBoxFlat)baseStyle.Duplicate();
+		btnPressed.BgColor = new Color(0.04f, 0.04f, 0.04f, 1f); btnPressed.BorderColor = new Color(0.6f, 0.5f, 0.1f, 1f);
+		btnPressed.ShadowSize = 2; btnPressed.ShadowOffset = new Vector2(0, 2);
+
+		MasterTheme = new Theme();
+		_fantasyFont = GD.Load<Font>("res://fonts/yoster.ttf"); 
+		if (_fantasyFont != null)
+		{
+			MasterTheme.DefaultFont = _fantasyFont;
+			MasterTheme.SetFont("normal_font", "RichTextLabel", _fantasyFont);
+			MasterTheme.SetFont("bold_font", "RichTextLabel", _fantasyFont);
+		}
+		
+		MasterTheme.SetStylebox("panel", "PanelContainer", baseStyle);
+		MasterTheme.SetStylebox("normal", "Button", btnNormal); MasterTheme.SetStylebox("hover", "Button", btnHover);
+		MasterTheme.SetStylebox("pressed", "Button", btnPressed); MasterTheme.SetStylebox("focus", "Button", new StyleBoxEmpty());
+		MasterTheme.SetFontSize("normal_font_size", "RichTextLabel", 26); MasterTheme.SetColor("default_color", "RichTextLabel", new Color(0.95f, 0.95f, 0.95f, 1f));
+		MasterTheme.SetFontSize("font_size", "Label", 22); MasterTheme.SetColor("font_color", "Label", new Color(0.95f, 0.95f, 0.95f, 1f));
+		
+		if (ActionMenu != null) ActionMenu.Theme = MasterTheme;
+		if (StatsLabel != null)
+		{
+			StatsLabel.Theme = MasterTheme;
+			StatsLabel.AddThemeStyleboxOverride("normal", baseStyle);
+			StatsLabel.AddThemeColorOverride("default_color", new Color(0.95f, 0.95f, 0.95f, 1f));
+			StatsLabel.AddThemeFontSizeOverride("normal_font_size", 24); StatsLabel.AddThemeFontSizeOverride("bold_font_size", 28); 
+			StatsLabel.BbcodeEnabled = true; StatsLabel.FitContent = true; StatsLabel.ScrollActive = false;
+			StatsLabel.CustomMinimumSize = new Vector2(350, 0); StatsLabel.ClipContents = false;
+		}
+
+		Button[] buttons = { AttackButton, EndTurnButton, PartyButton };
+		foreach (Button btn in buttons)
+		{
+			if (btn == null) continue;
+			btn.AddThemeStyleboxOverride("normal", btnNormal); btn.AddThemeStyleboxOverride("hover", btnHover);
+			btn.AddThemeStyleboxOverride("pressed", btnPressed); btn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+			btn.AddThemeFontSizeOverride("font_size", 24); 
+			AddButtonJuice(btn);
+		}
+		
+		ItemSlotStyle = new StyleBoxFlat { BgColor = new Color(0.12f, 0.12f, 0.15f, 0.95f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2, BorderColor = new Color(0.25f, 0.25f, 0.3f, 1f) };
+		ItemSlotHoverStyle = (StyleBoxFlat)ItemSlotStyle.Duplicate(); ItemSlotHoverStyle.BgColor = new Color(0.2f, 0.2f, 0.25f, 1f); ItemSlotHoverStyle.BorderColor = new Color(1f, 0.85f, 0.3f, 1f);
+	}
+
+	private void UpdateStatsUI()
+	{
+		if (StatsLabel == null) return;
+
+		if (_selectedUnit != null && _selectedUnit.Data != null)
+		{
+			string moveStr = _selectedUnit.HasMoved ? "[color=#666666]Used[/color]" : "[color=#44ff44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
+			string atkStr = _selectedUnit.HasAttacked ? "[color=#666666]Used[/color]" : "[color=#ffaa44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
+			StatsLabel.Text = $"[center][b][wave amp=20 freq=3]{_selectedUnit.Data.Profile.Name}[/wave][/b]\n[color=gold]Lv.{_selectedUnit.Data.Level}[/color] | HP: [color=#ff4444]{_selectedUnit.Data.CurrentHP}[/color]/{_selectedUnit.Data.GetTotalMaxHP()}\nMove: {moveStr} | Attack: {atkStr}[/center]";
+		}
+		else StatsLabel.Text = "[center]\nSelect a Unit...[/center]";
+
+		StatsLabel.PivotOffset = StatsLabel.Size / 2;
+		Tween popTween = CreateTween();
+		popTween.TweenProperty(StatsLabel, "scale", new Vector2(1.05f, 1.05f), 0.08f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		popTween.TweenProperty(StatsLabel, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+	}
+
+	private void ShowActions(bool show)
+	{
+		if (show && _selectedUnit != null)
+		{
+			AttackButton.Text = "Attack";
+			AttackButton.Disabled = _selectedUnit.HasAttacked;
+		}
+
+		if (_uiTween != null && _uiTween.IsValid()) _uiTween.Kill();
+		_uiTween = CreateTween();
+		ActionMenu.PivotOffset = ActionMenu.Size / 2;
+
+		if (show)
+		{
+			if (!ActionMenu.Visible) ActionMenu.Scale = new Vector2(0.01f, 0.01f);
+			ActionMenu.Visible = true;
+			_uiTween.TweenProperty(ActionMenu, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		}
+		else
+		{
+			_uiTween.TweenProperty(ActionMenu, "scale", new Vector2(0.01f, 0.01f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			_uiTween.Finished += () => ActionMenu.Visible = false;
+		}
+	}
+
+	private void AddButtonJuice(Button btn)
+	{
+		btn.MouseEntered += () => { btn.PivotOffset = btn.Size / 2; CreateTween().TweenProperty(btn, "scale", new Vector2(1.08f, 1.08f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out); };
+		btn.MouseExited += () => { CreateTween().TweenProperty(btn, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out); };
+		btn.ButtonDown += () => { CreateTween().TweenProperty(btn, "scale", new Vector2(0.9f, 0.9f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
+		btn.ButtonUp += () => { CreateTween().TweenProperty(btn, "scale", new Vector2(1.08f, 1.08f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out); };
+	}
+
+	private void OnAttackButtonPressed()
+	{
+		if (_currentState == State.SelectingAttackTarget) CancelAttackMode();
+		else if (_selectedUnit != null && !_selectedUnit.HasAttacked) EnterAttackMode();
+	}
+
+	private void EnterAttackMode()
+	{
+		_currentState = State.SelectingAttackTarget;
+		AttackButton.Text = "Cancel";
+		if (AttackCursorIcon != null) Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+	}
+
+	private void CancelAttackMode()
+	{
+		_currentState = State.PlayerTurn;
+		AttackButton.Text = "Attack";
+		ShowActions(true);
+		Input.SetCustomMouseCursor(null);
+	}
+
+	private void ShowUnitInfo(Unit u) { 
+		if (StatsLabel != null && u.Data != null) 
+			StatsLabel.Text = $"Enemy Unit\nLv.{u.Data.Level} HP: {u.Data.CurrentHP}/{u.Data.GetTotalMaxHP()}\nDmg: {u.Data.GetTotalDamage()}"; 
+	}
+
+	private async Task ShowTurnAnnouncer(string text, Color color)
+	{
+		Label announcer = new Label { Text = text, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+		announcer.AddThemeFontSizeOverride("font_size", 100); announcer.AddThemeColorOverride("font_color", color);
+		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0)); announcer.AddThemeConstantOverride("outline_size", 20);
+		if (_fantasyFont != null) announcer.AddThemeFontOverride("font", _fantasyFont);
+		
+		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer); else AddChild(announcer);
+
+		announcer.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
+		announcer.Scale = Vector2.Zero; announcer.Modulate = new Color(1, 1, 1, 0);
+
+		Tween tween = CreateTween();
+		tween.Parallel().TweenProperty(announcer, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		tween.Parallel().TweenProperty(announcer, "modulate:a", 1.0f, 0.3f);
+		tween.Chain().TweenInterval(1.0f);
+		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.5f, 1.5f), 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+		tween.Parallel().TweenProperty(announcer, "modulate:a", 0.0f, 0.3f);
+		tween.Finished += () => announcer.QueueFree();
+
+		await ToSignal(tween, Tween.SignalName.Finished);
+	}
+
+	private void SpawnFloatingText(Vector3 targetPosition, string text, Color color, float size = 30)
+	{
+		Label3D label = new Label3D { Text = text, PixelSize = 0.02f, FontSize = (int)size, Modulate = color, OutlineModulate = new Color(0, 0, 0), OutlineSize = 6, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true };
+		if (_fantasyFont != null) label.Font = _fantasyFont;
+		AddChild(label);
+		label.GlobalPosition = targetPosition + new Vector3(0, 1.5f, 0);
+
+		Tween tween = CreateTween();
+		tween.TweenProperty(label, "global_position", label.GlobalPosition + new Vector3(0, 1.2f, 0), 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		tween.Parallel().TweenProperty(label, "modulate:a", 0.0f, 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+		tween.Finished += () => label.QueueFree();
+	}
+
+	public async Task ShowLevelUpScreen(Unit unit)
+	{
+		_levelUpActive = true; ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		ActiveLevelUpTcs = new TaskCompletionSource<bool>();
+
+		Control uiRoot = new Control(); uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (MasterTheme != null) uiRoot.Theme = MasterTheme;
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
+
+		CenterContainer center = new CenterContainer(); center.SetAnchorsPreset(Control.LayoutPreset.FullRect); uiRoot.AddChild(center);
+
+		PanelContainer panel = new PanelContainer();
+		StyleBoxFlat panelStyle = new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f, 0.95f), CornerRadiusTopLeft = 15, CornerRadiusTopRight = 15, CornerRadiusBottomLeft = 15, CornerRadiusBottomRight = 15, BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4, BorderColor = new Color(1f, 0.8f, 0f, 1f), ContentMarginBottom = 30, ContentMarginTop = 30, ContentMarginLeft = 40, ContentMarginRight = 40 };
+		panel.AddThemeStyleboxOverride("panel", panelStyle); center.AddChild(panel);
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 15); panel.AddChild(vbox);
+
+		Label title = new Label { Text = $"{unit.Data.Profile.Name} Reached Level {unit.Data.Level}!", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 30); vbox.AddChild(title);
+
+		List<string> options = new List<string> { "FullHeal", "MaxHP", "Movement", "AttackDamage" }.OrderBy(x => new System.Random().Next()).Take(3).ToList();
+
+		foreach (string opt in options)
+		{
+			Button btn = new Button { CustomMinimumSize = new Vector2(300, 60) }; btn.AddThemeFontSizeOverride("font_size", 20);
+			if (opt == "FullHeal") btn.Text = "Fully Restore HP"; else if (opt == "MaxHP") btn.Text = "+5 Max HP"; else if (opt == "Movement") btn.Text = "+1 Movement Range"; else if (opt == "AttackDamage") btn.Text = "+2 Attack Damage";
+
+			btn.Pressed += () => {
+				if (opt == "FullHeal") unit.Data.CurrentHP = unit.Data.MaxHP; else if (opt == "MaxHP") { unit.Data.MaxHP += 5; unit.Data.CurrentHP += 5; } else if (opt == "Movement") unit.Data.Movement += 1; else if (opt == "AttackDamage") unit.Data.AttackDamage += 2;
+				unit.UpdateVisuals();
+
+				Tween outTween = CreateTween();
+				outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+				outTween.Finished += () => {
+					uiRoot.QueueFree(); if (DimOverlay != null && !_dialogueActive) DimOverlay.Visible = false;
+					_levelUpActive = false; if (_currentState == State.PlayerTurn && _selectedUnit != null) ShowActions(true);
+					
+					// === THE FIX: Complete the task safely ===
+					ActiveLevelUpTcs?.TrySetResult(true);
+					ActiveLevelUpTcs = null;
+				};
+			};
+			vbox.AddChild(btn);
+		}
+
+		await ToSignal(GetTree(), "process_frame");
+		panel.PivotOffset = panel.Size / 2; panel.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		try { await ActiveLevelUpTcs.Task; } catch { /* Ignore task cancellation safely */ } 
+	}
+
+	public async Task RollForLoot() { if (GD.Randf() > 0.8f) return; var items = ItemDatabase.Values.ToList(); await ShowLootScreen(items[GD.RandRange(0, items.Count - 1)].Clone()); }
+
+	public async Task ShowLootScreen(Equipment item)
+	{
+		_lootScreenActive = true; ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		ActiveLootTcs = new TaskCompletionSource<bool>();
+		Control uiRoot = new Control(); uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
+
+		PanelContainer panel = new PanelContainer { Theme = MasterTheme, CustomMinimumSize = new Vector2(400, 0) }; uiRoot.AddChild(panel);
+		panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+		panel.Position = new Vector2((GetViewport().GetVisibleRect().Size.X / 2f) - 200f, -300f); 
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 15); panel.AddChild(vbox);
+		Label title = new Label { Text = "Loot Found!", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 28); title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.2f)); vbox.AddChild(title);
+		vbox.AddChild(new TextureRect { Texture = GD.Load<Texture2D>(item.IconPath), ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(80, 80), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+
+		RichTextLabel itemName = new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[center]{item.Name}\n[color=#aaaaaa]{item.Description}[/color][/center]", CustomMinimumSize = new Vector2(350, 0) };
+		itemName.AddThemeFontSizeOverride("normal_font_size", 20); vbox.AddChild(itemName);
+
+		Button grabBtn = new Button { Text = "Grab", CustomMinimumSize = new Vector2(200, 60) }; AddButtonJuice(grabBtn); vbox.AddChild(grabBtn);
+		CreateTween().TweenProperty(panel, "position:y", 150f, 0.6f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+
+		grabBtn.Pressed += () => {
+			Inventory.Add(item);
+			Tween outTween = CreateTween(); outTween.TweenProperty(panel, "position:y", -300f, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outTween.Finished += () => { 
+				uiRoot.QueueFree(); if (DimOverlay != null && !_levelUpActive && !_dialogueActive) DimOverlay.Visible = false; _lootScreenActive = false; 
+				
+				// === THE FIX: Complete the task safely ===
+				ActiveLootTcs?.TrySetResult(true); 
+				ActiveLootTcs = null;
+			};
+		};
+		try { await ActiveLootTcs.Task; } catch { /* Ignore task cancellation safely */ }
+	}
+
+	private void TogglePartyMenu()
+	{
+		// FIX 1: Allow opening during Camp state!
+		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu && _currentState != State.Camp) return;
+
+		if (_activePartyMenu != null)
+		{
+			Tween outTween = CreateTween();
+			outTween.TweenProperty(_activePartyMenu, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outTween.Finished += () => { 
+				_activePartyMenu.QueueFree(); 
+				_activePartyMenu = null; 
+				if (DimOverlay != null) DimOverlay.Visible = false; 
+				
+				// FIX 2: Return to the correct state depending on where we opened it!
+				if (_campNodes.Count > 0) 
+				{
+					_currentState = State.Camp;
+					if (_campUIRoot != null) _campUIRoot.Visible = true;
+				}
+				else 
+				{
+					_currentState = State.PlayerTurn; 
+					ShowActions(true); 
+				}
+			};
+			return;
+		}
+
+		// FIX 3: Hide the Camp UI while the menu is open so it isn't distracting in the background
+		if (_currentState == State.Camp && _campUIRoot != null) _campUIRoot.Visible = false;
+
+		_currentState = State.PartyMenu; ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		_activePartyMenu = new CenterContainer(); _activePartyMenu.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activePartyMenu); else AddChild(_activePartyMenu);
+
+		// --- RESTORED UI BUILDING CODE ---
+		VBoxContainer menuWrapper = new VBoxContainer(); menuWrapper.AddThemeConstantOverride("separation", 20); _activePartyMenu.AddChild(menuWrapper);
+		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 480), Theme = MasterTheme }; menuWrapper.AddChild(mainPanel);
+		HBoxContainer mainHBox = new HBoxContainer(); mainPanel.AddChild(mainHBox);
+		VBoxContainer leftCol = new VBoxContainer { CustomMinimumSize = new Vector2(280, 0) }; mainHBox.AddChild(leftCol);
+
+		Label rosterTitle = new Label { Text = "Party Roster", HorizontalAlignment = HorizontalAlignment.Center }; rosterTitle.AddThemeFontSizeOverride("font_size", 28); leftCol.AddChild(rosterTitle); leftCol.AddChild(new HSeparator());
+		ScrollContainer rosterScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, VerticalScrollMode = ScrollContainer.ScrollMode.Auto, SizeFlagsVertical = Control.SizeFlags.ExpandFill }; leftCol.AddChild(rosterScroll);
+		MarginContainer rosterMargin = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; rosterMargin.AddThemeConstantOverride("margin_left", 16); rosterMargin.AddThemeConstantOverride("margin_right", 16); rosterMargin.AddThemeConstantOverride("margin_top", 10); rosterMargin.AddThemeConstantOverride("margin_bottom", 10); rosterScroll.AddChild(rosterMargin);
+		VBoxContainer rosterBox = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; rosterBox.AddThemeConstantOverride("separation", 8); rosterMargin.AddChild(rosterBox);
+
+		VSeparator splitLine = new VSeparator(); splitLine.AddThemeConstantOverride("separation", 30); mainHBox.AddChild(splitLine);
+		_rightMenuPanel = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; mainHBox.AddChild(_rightMenuPanel);
+
+		foreach (PersistentUnit unit in _party)
+		{
+			Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) }; AddButtonJuice(btn);
+			btn.Pressed += () => RefreshPartyDetailsAndInventory(unit); rosterBox.AddChild(btn);
+		}
+
+		leftCol.AddChild(new HSeparator());
+		Button closeBtn = new Button { Text = "Close Menu", CustomMinimumSize = new Vector2(0, 50) }; closeBtn.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f)); AddButtonJuice(closeBtn); closeBtn.Pressed += TogglePartyMenu; leftCol.AddChild(closeBtn);
+
+		menuWrapper.PivotOffset = new Vector2(475, 350); menuWrapper.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(menuWrapper, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		if (_party.Count > 0) RefreshPartyDetailsAndInventory(_party[0]);
+	}
+
+	private void RefreshPartyDetailsAndInventory(PersistentUnit unit)
+	{
+		_viewedPartyMember = unit;
+		if (_rightMenuPanel != null)
+		{
+			foreach (Node child in _rightMenuPanel.GetChildren()) child.QueueFree();
+			_rightMenuPanel.AddChild(BuildPartyMemberDetails(unit));
+			_rightMenuPanel.AddChild(BuildInventoryUI());
+			_rightMenuPanel.Modulate = new Color(1, 1, 1, 0); CreateTween().TweenProperty(_rightMenuPanel, "modulate:a", 1.0f, 0.15f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+	}
+
+	private Control BuildPartyMemberDetails(PersistentUnit unit)
+	{
+		HBoxContainer layout = new HBoxContainer(); layout.AddThemeConstantOverride("separation", 40);
+		layout.AddChild(new TextureRect { Texture = GD.Load<Texture2D>(unit.Profile.SpritePath), ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(240, 350), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter });
+
+		VBoxContainer rightCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center }; rightCol.AddThemeConstantOverride("separation", 15); layout.AddChild(rightCol);
+		rightCol.AddChild(new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[left][font_size=32][b][wave amp=20 freq=2]{unit.Profile.Name}[/wave][/b][/font_size]\n[color=gold]Level {unit.Level}[/color][/left]" });
+		rightCol.AddChild(new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[left]{(unit.IsPlayerCharacter ? "[color=#44ff44]Player Character[/color]" : "[color=#44ccff]Companion[/color]")}\n\n[color=#aaaaaa]Max HP:[/color] {unit.GetTotalMaxHP()}\n[color=#aaaaaa]Damage:[/color] {unit.GetTotalDamage()}\n[color=#aaaaaa]Movement:[/color] {unit.GetTotalMovement()}[/left]" });
+
+		rightCol.AddChild(new HSeparator());
+		Label equipTitle = new Label { Text = "Equipment (Click to Remove)" }; equipTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); rightCol.AddChild(equipTitle);
+
+		HBoxContainer equipBox = new HBoxContainer(); equipBox.AddThemeConstantOverride("separation", 20); rightCol.AddChild(equipBox);
+		equipBox.AddChild(CreateEquipmentSlot("Weapon", unit.EquippedWeapon, EquipSlot.Weapon)); equipBox.AddChild(CreateEquipmentSlot("Armor", unit.EquippedArmor, EquipSlot.Armor));
+
+		if (!unit.IsPlayerCharacter)
+		{
+			rightCol.AddChild(new HSeparator());
+			Label relTitle = new Label { Text = "Dynamics with You" }; relTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); rightCol.AddChild(relTitle);
+
+			foreach (var rel in unit.Relationships)
+			{
+				VBoxContainer barBox = new VBoxContainer();
+				Color barColor = rel.Key == "Fear" ? new Color(0.8f, 0.3f, 0.3f) : new Color(0.3f, 0.8f, 0.5f);
+				ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(0, 22), ShowPercentage = false, MaxValue = 100 };
+				bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
+				bar.AddThemeStyleboxOverride("fill", new StyleBoxFlat { BgColor = barColor, CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
+
+				Label barLabel = new Label { Text = $"  {rel.Key}: {rel.Value}%", VerticalAlignment = VerticalAlignment.Center }; barLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect); barLabel.AddThemeFontSizeOverride("font_size", 14); barLabel.AddThemeColorOverride("font_color", Color.Color8(255,255,255,220)); bar.AddChild(barLabel);
+				barBox.AddChild(bar); rightCol.AddChild(barBox); bar.Value = 0;
+				bar.TreeEntered += () => { CreateTween().TweenProperty(bar, "value", (double)rel.Value, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
+			}
+		}
+		return layout;
+	}
+
+	private Control CreateEquipmentSlot(string slotName, Equipment equip, EquipSlot slotType)
+	{
+		VBoxContainer slotBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		Label title = new Label { Text = slotName, HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 14); title.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f)); slotBox.AddChild(title);
+
+		Button slotBtn = new Button { CustomMinimumSize = new Vector2(80, 80), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
+		slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+
+		if (equip != null) 
+		{
+			slotBtn.Icon = GD.Load<Texture2D>(equip.IconPath); slotBtn.TooltipText = $"{equip.Name}\n{equip.Description}";
+			slotBtn.Pressed += () => { 
+				if (slotType == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = null; 
+				else _viewedPartyMember.EquippedArmor = null; 
+				Inventory.Add(equip); 
+				
+				// === NEW: Force the 3D board unit and Stats UI to catch the change! ===
+				Unit activeUnit = _units.FirstOrDefault(u => u.Data == _viewedPartyMember);
+				if (activeUnit != null) activeUnit.UpdateVisuals();
+				UpdateStatsUI();
+
+				RefreshPartyDetailsAndInventory(_viewedPartyMember); 
+			};
+		}
+		else { slotBtn.Text = "+"; slotBtn.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.3f)); }
+
+		slotBox.AddChild(slotBtn); AddSlotJuice(slotBtn, 0.1f); return slotBox;
+	}
+
+	private PanelContainer BuildInventoryUI()
+	{
+		PanelContainer invPanel = new PanelContainer { Theme = MasterTheme }; VBoxContainer invBox = new VBoxContainer(); invPanel.AddChild(invBox);
+		Label invTitle = new Label { Text = "Party Inventory (Click to Equip to Current Unit)" }; invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); invBox.AddChild(invTitle); invBox.AddChild(new HSeparator());
+
+		GridContainer grid = new GridContainer { Columns = 10 }; grid.AddThemeConstantOverride("h_separation", 10); grid.AddThemeConstantOverride("v_separation", 10); invBox.AddChild(grid);
+
+		for (int i = 0; i < 20; i++)
+		{
+			Button slotBtn = new Button { CustomMinimumSize = new Vector2(70, 70), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
+			slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+			
+			if (i < Inventory.Count && Inventory[i] is Equipment equipItem)
+			{
+				slotBtn.Icon = GD.Load<Texture2D>(equipItem.IconPath); slotBtn.TooltipText = $"{equipItem.Name}\n{equipItem.Description}";
+				slotBtn.Pressed += () => {
+					Inventory.Remove(equipItem);
+					Equipment oldItem = equipItem.Slot == EquipSlot.Weapon ? _viewedPartyMember.EquippedWeapon : _viewedPartyMember.EquippedArmor;
+					if (oldItem != null) Inventory.Add(oldItem);
+					if (equipItem.Slot == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = equipItem; else _viewedPartyMember.EquippedArmor = equipItem;
+					
+					// === NEW: Force the 3D board unit and Stats UI to catch the change! ===
+					Unit activeUnit = _units.FirstOrDefault(u => u.Data == _viewedPartyMember);
+					if (activeUnit != null) activeUnit.UpdateVisuals();
+					UpdateStatsUI();
+
+					RefreshPartyDetailsAndInventory(_viewedPartyMember);
+				};
+			}
+			grid.AddChild(slotBtn); AddSlotJuice(slotBtn, i * 0.015f);
+		}
+		return invPanel;
+	}
+
+	private void AddSlotJuice(Button slot, float delay = 0f)
+	{
+		slot.PivotOffset = slot.CustomMinimumSize / 2; slot.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(slot, "scale", Vector2.One, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(delay);
+		slot.MouseEntered += () => { slot.PivotOffset = slot.Size / 2; CreateTween().TweenProperty(slot, "scale", new Vector2(1.1f, 1.1f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out); };
+		slot.MouseExited += () => { CreateTween().TweenProperty(slot, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out); };
+		slot.ButtonDown += () => { CreateTween().TweenProperty(slot, "scale", new Vector2(0.9f, 0.9f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
+	}
+
+	private void ShowRelationshipNotification(string charName, string relType, int amount)
+	{
+		string sign = amount > 0 ? "+" : ""; Color themeColor = amount > 0 ? new Color(0.4f, 1f, 0.5f) : new Color(1f, 0.4f, 0.4f);
+		PanelContainer panel = new PanelContainer();
+		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.08f, 0.08f, 0.12f, 0.95f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthLeft = 3, BorderWidthRight = 3, BorderWidthTop = 3, BorderWidthBottom = 3, BorderColor = themeColor, ShadowSize = 10, ShadowColor = new Color(0, 0, 0, 0.5f) });
+
+		MarginContainer margin = new MarginContainer(); margin.AddThemeConstantOverride("margin_left", 20); margin.AddThemeConstantOverride("margin_right", 20); margin.AddThemeConstantOverride("margin_top", 10); margin.AddThemeConstantOverride("margin_bottom", 10); panel.AddChild(margin);
+		Label lbl = new Label { Text = $"{charName}: {sign}{amount} {relType}", HorizontalAlignment = HorizontalAlignment.Center }; lbl.AddThemeFontSizeOverride("font_size", 22); lbl.AddThemeColorOverride("font_color", themeColor);
+		if (MasterTheme != null && MasterTheme.DefaultFont != null) lbl.AddThemeFontOverride("font", MasterTheme.DefaultFont);
+		margin.AddChild(lbl);
+
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(panel); else AddChild(panel);
+		CallDeferred(MethodName.AnimateRelationshipNotification, panel, GetViewport().GetVisibleRect().Size);
+	}
+
+	private void AnimateRelationshipNotification(PanelContainer panel, Vector2 screenSize)
+	{
+		float startX = screenSize.X + 50f; float endX = screenSize.X - panel.Size.X - 40f;
+		panel.Position = new Vector2(startX, 40f);
+
+		Tween t = CreateTween();
+		t.TweenProperty(panel, "position:x", endX, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.TweenInterval(2.5f);
+		t.TweenProperty(panel, "position:x", startX, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		t.Finished += () => panel.QueueFree();
+	}
+	
+	private void ShowNextMissionScreen()
+	{
+		_currentState = State.Cutscene;
+		ShowActions(false);
+		if (DimOverlay != null) DimOverlay.Visible = true;
+
+		Control uiRoot = new Control(); 
+		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
+
+		CenterContainer center = new CenterContainer { Theme = MasterTheme }; 
+		center.SetAnchorsPreset(Control.LayoutPreset.FullRect); 
+		uiRoot.AddChild(center);
+
+		PanelContainer panel = new PanelContainer();
+		panel.AddThemeStyleboxOverride("panel", BaseUIStyle); 
+		center.AddChild(panel);
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; 
+		vbox.AddThemeConstantOverride("separation", 20); 
+		panel.AddChild(vbox);
+
+		Label title = new Label { Text = "MISSION COMPLETE", HorizontalAlignment = HorizontalAlignment.Center }; 
+		title.AddThemeFontSizeOverride("font_size", 40); 
+		title.AddThemeColorOverride("font_color", new Color(0.4f, 1f, 0.5f)); 
+		vbox.AddChild(title);
+
+		Label subtitle = new Label { Text = "The party rests and recovers some HP.", HorizontalAlignment = HorizontalAlignment.Center };
+		subtitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		vbox.AddChild(subtitle);
+
+		Button nextBtn = new Button { Text = "Start Next Mission", CustomMinimumSize = new Vector2(250, 60) }; 
+		AddButtonJuice(nextBtn); 
+		vbox.AddChild(nextBtn);
+
+		// Entrance Animation
+		panel.PivotOffset = new Vector2(200, 100); // Approximate center
+		panel.Scale = Vector2.Zero;
+		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		nextBtn.Pressed += () => {
+			Tween outTween = CreateTween();
+			outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outTween.Finished += () => {
+				uiRoot.QueueFree();
+				if (DimOverlay != null) DimOverlay.Visible = false;
+				
+				// Clean up the old board and load the next JSON!
+				ClearBoard();
+				LoadMission(_currentMissionIndex + 1);
+			};
+		};
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameManager.cs]
+
+using Godot;
+using Godot.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public partial class GameManager : Node3D
+{
+	// === SINGLETON ACCESS ===
+	public static GameManager Instance { get; private set; }
+	public Theme MasterTheme { get; private set; }
+	public StyleBoxFlat BaseUIStyle { get; private set; }
+	public StyleBoxFlat BadgeStyle { get; private set; }
+	public StyleBoxFlat ItemSlotStyle { get; private set; }
+	public StyleBoxFlat ItemSlotHoverStyle { get; private set; }
+
+	[ExportGroup("Core References")]
+	[Export] public PackedScene UnitScene;
+	[Export] public PackedScene TileScene;
+	[Export] public Camera3D Cam;
+	private Vector3 _initialCamPos;
+	private Font _fantasyFont;
+
+	[ExportGroup("UI References")]
+	[Export] public Control ActionMenu;
+	[Export] public Button AttackButton;
+	[Export] public Button EndTurnButton;
+	[Export] public Button PartyButton;
+	[Export] public RichTextLabel StatsLabel;
+	[Export] public ColorRect DimOverlay;
+	[Export] public Texture2D AttackCursorIcon;
+
+	[ExportGroup("Environment References")]
+	[Export] public DirectionalLight3D MainLight;
+	[Export] public WorldEnvironment WorldEnv;
+	[Export] public Godot.Collections.Array<PackedScene> BackgroundDioramas;
+	
+	// === STATE TRACKING ===
+	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene, PartyMenu, Camp }
+	private State _currentState = State.Cutscene;
+	private List<string> _campaignMissions = new();
+	private int _currentMissionIndex = 0;
+	public System.Collections.Generic.Dictionary<string, bool> StoryFlags = new();
+	
+	private Tween _uiTween;
+	private bool _dialogueActive = false;
+	private bool _levelUpActive = false;
+	private bool _lootScreenActive = false;
+	private Control _activePartyMenu;
+	private Callable _onTimelineEndedCallable;
+	private Callable _onDialogicSignalCallable;
+	public TaskCompletionSource<bool> ActiveLevelUpTcs;
+	public TaskCompletionSource<bool> ActiveLootTcs;
+	private Timer _cloudTimer;
+	private CanvasLayer _dialogueBgLayer;
+	private TextureRect _activeDialogueBackground;
+
+	// === GAME DATA ===
+	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
+	public List<CampConversation> CampConversationsPool = new();
+	private List<PersistentUnit> _party = new(); 
+	public List<GameItem> Inventory = new();
+	public System.Collections.Generic.Dictionary<string, Equipment> ItemDatabase = new();
+	private PersistentUnit _viewedPartyMember;
+	private VBoxContainer _rightMenuPanel; 
+
+	// === STORY & SCRIPTING ===
+	private System.Collections.Generic.Dictionary<string, List<ScriptEvent>> _scriptDatabase = new();
+	private string _currentSection = "";
+	private int _currentScriptIndex = -1;
+	private string _pendingSection = "";
+	private Node _dialogic;
+	private int _currentTurnNumber = 1;
+	private List<MidBattleEvent> _activeMidBattleEvents = new();
+	private bool _isMidBattleDialogue = false;
+
+	public override void _Ready()
+	{
+		Instance = this; 
+		if (Cam != null) _initialCamPos = Cam.GlobalPosition;
+
+		CallDeferred(MethodName.SetupUnifiedUI);
+
+		_unitDatabase["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Dougal"] = new UnitProfile("Dougal", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
+		_unitDatabase["Guard"] = new UnitProfile("Goblin", "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right);
+		_unitDatabase["Orc"]   = new UnitProfile("Ogre", "res://assets/HR_ORC2.png", 25, 8, 1, 2, 120, UnitFacing.Center);
+
+		ItemDatabase["IronSword"] = new Equipment("IronSword", "Iron Sword", "res://icons/sword.png", EquipSlot.Weapon, bonusDmg: 1);
+		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
+
+		GenerateGrid();
+		AttackButton.Pressed += OnAttackButtonPressed;
+		EndTurnButton.Pressed += OnEndTurnPressed; 
+		if (PartyButton != null) PartyButton.Pressed += TogglePartyMenu;
+		ActionMenu.Visible = false;
+
+		_dialogic = GetNodeOrNull<Node>("/root/Dialogic");
+		
+		if (_dialogic != null)
+		{
+			_onTimelineEndedCallable = new Callable(this, MethodName.OnTimelineEnded);
+			_onDialogicSignalCallable = new Callable(this, MethodName.OnDialogicSignal);
+			
+			_dialogic.Connect("timeline_ended", _onTimelineEndedCallable);
+			_dialogic.Connect("signal_event", _onDialogicSignalCallable);
+		}
+		
+		_cloudTimer = new Timer { WaitTime = 3f, Autostart = false, OneShot = true };
+		_cloudTimer.Timeout += StartAmbientCloudSystem;
+		AddChild(_cloudTimer);
+		StartAmbientCloudSystem();
+
+		CallDeferred(MethodName.UpdateStatsUI);
+
+		// === THE FIX: ONLY load the campaign here! No raw AdvanceScript() calls! ===
+		CampaignData campaign = StoryLoader.GetCampaignData();
+		if (campaign != null && campaign.Missions.Count > 0)
+		{
+			_campaignMissions = campaign.Missions;
+			
+			// === NEW: Store the camp conversations! ===
+			if (campaign.CampConversations != null)
+			{
+				CampConversationsPool = campaign.CampConversations;
+			}
+			
+			LoadMission(0); 
+		}
+		else
+		{
+			GD.PrintErr("CRITICAL: No campaign data found!");
+		}
+	}
+
+	public override void _ExitTree()
+	{
+		if (Instance == this) Instance = null;
+
+		// === THE FIX: Cancel hanging UI Tasks so the C# state machine can die ===
+		ActiveLevelUpTcs?.TrySetCanceled();
+		ActiveLootTcs?.TrySetCanceled();
+
+		// === THE FIX: Disconnect using the exact cached Callables ===
+		if (_dialogic != null)
+		{
+			if (_dialogic.IsConnected("timeline_ended", _onTimelineEndedCallable))
+				_dialogic.Disconnect("timeline_ended", _onTimelineEndedCallable);
+				
+			if (_dialogic.IsConnected("signal_event", _onDialogicSignalCallable))
+				_dialogic.Disconnect("signal_event", _onDialogicSignalCallable);
+		}
+
+		if (AttackButton != null) AttackButton.Pressed -= OnAttackButtonPressed;
+		if (EndTurnButton != null) EndTurnButton.Pressed -= OnEndTurnPressed;
+		if (PartyButton != null) PartyButton.Pressed -= TogglePartyMenu;
+
+		foreach (var u in _units)
+		{
+			if (IsInstanceValid(u)) u.OnDied -= HandleUnitDeath;
+		}
+		
+		if (_cloudTimer != null && IsInstanceValid(_cloudTimer)) _cloudTimer.Timeout -= StartAmbientCloudSystem;
+
+		_units.Clear();
+		_obstacles.Clear();
+		_activeDioramas.Clear();
+		_nightLights.Clear();
+		_grid.Clear();
+		
+		if (_uiTween != null && _uiTween.IsValid()) _uiTween.Kill();
+	}
+
+	public override void _Process(double delta)
+	{
+		if (_dialogueActive || _levelUpActive || _currentState == State.Cutscene || _currentState == State.PartyMenu) return;
+
+		Vector2 mousePos = GetViewport().GetMousePosition();
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+		Vector2 moveDir = Vector2.Zero;
+		float margin = 20f; 
+
+		if (mousePos.X < margin) moveDir.X -= 1;
+		if (mousePos.X > screenSize.X - margin) moveDir.X += 1;
+		if (mousePos.Y < margin) moveDir.Y += 1; 
+		if (mousePos.Y > screenSize.Y - margin) moveDir.Y -= 1; 
+
+		if (moveDir != Vector2.Zero)
+		{
+			moveDir = moveDir.Normalized();
+			Vector3 forward = -Cam.GlobalTransform.Basis.Z; forward.Y = 0; forward = forward.Normalized();
+			Vector3 right = Cam.GlobalTransform.Basis.X; right.Y = 0; right = right.Normalized();
+			Vector3 finalMove = (right * moveDir.X) + (forward * moveDir.Y);
+
+			Vector3 newPos = Cam.GlobalPosition + (finalMove * 15f * (float)delta);
+			
+			float limitLeft = 0f; float limitRight = 10f;
+			float limitUp = 0f; float limitDown = 15f;
+
+			newPos.X = Mathf.Clamp(newPos.X, _initialCamPos.X - limitLeft, _initialCamPos.X + limitRight);
+			newPos.Z = Mathf.Clamp(newPos.Z, _initialCamPos.Z - limitUp, _initialCamPos.Z + limitDown);
+
+			Cam.GlobalPosition = newPos;
+		}
+	}
+
+	public override void _UnhandledInput(InputEvent @event)
+	{
+		if (_dialogueActive || _levelUpActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
+
+		if (@event is InputEventMouseMotion mouseMotion) HandleHover(mouseMotion.Position);
+		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+	}
+
+	// === SCRIPT & STORY LOGIC ===
+	private void AdvanceScript()
+	{
+		if (_dialogueActive) return; 
+
+		if (!string.IsNullOrEmpty(_pendingSection))
+		{
+			_currentSection = _pendingSection;
+			_currentScriptIndex = -1;
+			_pendingSection = ""; 
+		}
+
+		_currentScriptIndex++;
+		
+		if (!_scriptDatabase.ContainsKey(_currentSection) || _currentScriptIndex >= _scriptDatabase[_currentSection].Count)
+		{
+			// === MISSION COMPLETE LOGIC ===
+			if (_currentMissionIndex < _campaignMissions.Count - 1)
+			{
+				// Enter the cozy camp instead of moving instantly!
+				_ = EnterCampStage(); 
+			}
+			else
+			{
+				GD.Print("🎉 CAMPAIGN COMPLETE! You reached the end of the game!");
+				StatsLabel.Text = "[center][b][wave]CAMPAIGN WON![/wave][/b][/center]";
+			}
+			return;
+		}
+
+		ScriptEvent currentEvent = _scriptDatabase[_currentSection][_currentScriptIndex];
+
+		if (currentEvent.Type == EventType.AddPartyMember)
+		{
+			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], currentEvent.IsPlayer));
+			AdvanceScript();
+		}
+		else if (currentEvent.Type == EventType.JumpToSection)
+		{
+			_pendingSection = currentEvent.TargetSection;
+			AdvanceScript(); 
+		}
+		else if (currentEvent.Type == EventType.Dialogue) 
+		{
+			_currentState = State.Cutscene; 
+			StartDialogue(currentEvent.TimelinePath, currentEvent.Background);
+		}
+		else if (currentEvent.Type == EventType.Battle) 
+		{
+			StartBattle(currentEvent.BattleData);
+		}
+	}
+
+	public void StartDialogue(string timelinePath, string backgroundPath = null)
+	{
+		if (_dialogueActive || _dialogic == null) return;
+		_dialogueActive = true;
+		ShowActions(false);
+		DeselectUnit();
+		if (DimOverlay != null) DimOverlay.Visible = true;
+		
+		if (string.IsNullOrEmpty(backgroundPath))
+		{
+			if (DimOverlay != null) DimOverlay.Visible = true;
+		}
+		else
+		{
+			if (DimOverlay != null) DimOverlay.Visible = false;
+			ShowDialogueBackground(backgroundPath);
+		}
+		
+		StatsLabel.Text = "Dialogue...";
+		_dialogic.Call("start", timelinePath);
+	}
+	
+	private void OnTimelineEnded()
+	{
+		_dialogueActive = false;
+		if (DimOverlay != null) DimOverlay.Visible = false;
+		
+		// Shrink the background away with a snappy bounce
+		if (IsInstanceValid(_activeDialogueBackground))
+		{
+			TextureRect bg = _activeDialogueBackground; 
+			CanvasLayer layer = _dialogueBgLayer;
+			_activeDialogueBackground = null;
+			_dialogueBgLayer = null;
+
+			Tween t = CreateTween();
+			t.TweenProperty(bg, "scale", new Vector2(0.001f, 0.001f), 0.35f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			t.Finished += () => { bg.QueueFree(); layer?.QueueFree(); };
+		}
+		
+		if (_isMidBattleDialogue)
+		{
+			_isMidBattleDialogue = false;
+			CheckMidBattleEvents();
+		}
+		// === NEW: If we are in Camp, restore the UI and refresh the bubbles! ===
+		else if (_currentState == State.Camp)
+		{
+			if (_campUIRoot != null) _campUIRoot.Visible = true;
+			RefreshCampSpeechBubbles();
+		}
+		else 
+		{
+			AdvanceScript(); 
+		}
+	}
+	
+	public bool HasFlag(string flagName)
+	{
+		return StoryFlags.TryGetValue(flagName, out bool val) && val;
+	}
+
+	// Called by Dialogic's if statements!
+	public int GetRelationship(string charName, string relType)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName);
+		if (companion != null && companion.Relationships.ContainsKey(relType))
+			return companion.Relationships[relType];
+		return 0; // Return 0 if they haven't joined or the stat doesn't exist
+	}
+
+	private void OnDialogicSignal(string argument)
+	{
+		if (string.IsNullOrEmpty(argument)) return;
+		
+		if (argument.StartsWith("JumpTo:")) 
+		{
+			_pendingSection = argument.Split(":")[1];
+		}
+		else if (argument.StartsWith("SetSectionQuietly:"))
+		{
+			string[] parts = argument.Split(":");
+			if (parts.Length >= 2 && _scriptDatabase.ContainsKey(parts[1]))
+			{
+				_currentSection = parts[1];
+				_currentScriptIndex = 0;
+			}
+		}
+		else if (argument.StartsWith("Rel:"))
+		{
+			string[] parts = argument.Split(':');
+			if (parts.Length == 4 && int.TryParse(parts[3], out int amount))
+			{
+				UpdateRelationship(parts[1], parts[2], amount);
+			}
+		}
+		else if (argument.StartsWith("Emotion:"))
+		{
+			string[] parts = argument.Split(':');
+			if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]))
+			{
+				Vector2? burstPos = GetDialogicPortraitBurstScreenPosition(parts[1]);
+				ShowEmotionEffect(parts[1], parts[2], burstPos);
+			}
+		}
+		// === NEW: Catch the flag and save it to memory! ===
+		else if (argument.StartsWith("SetFlag:"))
+		{
+			string flagName = argument.Split(':')[1];
+			StoryFlags[flagName] = true;
+		}
+	}
+	
+	private void ShowDialogueBackground(string path)
+	{
+		Texture2D tex = GD.Load<Texture2D>(path);
+		if (tex == null) return;
+
+		// Layer 0 puts it perfectly ON TOP of the 3D board, but BEHIND Dialogic (which uses Layer 1+)
+		_dialogueBgLayer = new CanvasLayer { Layer = 0 }; 
+		AddChild(_dialogueBgLayer);
+
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+
+		_activeDialogueBackground = new TextureRect
+		{
+			Texture = tex,
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+			CustomMinimumSize = screenSize
+		};
+		
+		_dialogueBgLayer.AddChild(_activeDialogueBackground);
+		
+		_activeDialogueBackground.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		
+		// GAME JUICE: Start at size 0.001 perfectly in the center of the screen
+		_activeDialogueBackground.PivotOffset = screenSize / 2;
+		_activeDialogueBackground.Scale = new Vector2(0.001f, 0.001f);
+
+		CreateTween().TweenProperty(_activeDialogueBackground, "scale", Vector2.One, 0.45f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+	}
+
+	/// <summary>Find the current speaker's portrait and return a screen position for the burst (head/upper portrait area). Returns null if not found or if coords look wrong (e.g. Dialogic in SubViewport).</summary>
+	private Vector2? GetDialogicPortraitBurstScreenPosition(string characterName)
+	{
+		if (string.IsNullOrEmpty(characterName)) return null;
+		var containers = GetTree().GetNodesInGroup("dialogic_portrait_con_position");
+		Vector2 viewSize = GetViewport().GetVisibleRect().Size;
+		foreach (Node n in containers)
+		{
+			if (n is not Control container) continue;
+			foreach (Node child in container.GetChildren())
+			{
+				if (child.Name != characterName) continue;
+				if (child is not Node2D characterNode) continue;
+				// Origin = portrait bottom-center. Use ~55% of container height up = head/upper chest (burst area).
+				Vector2 originGlobal = characterNode.GlobalPosition;
+				Vector2 containerSize = container.Size;
+				if (containerSize.Y <= 0) containerSize = new Vector2(200, 400); // fallback
+				float up = containerSize.Y * 0.55f;
+				Vector2 burstPoint = originGlobal + new Vector2(0, -up);
+				// Reject if clearly wrong (different viewport or bogus) so effect falls back to center
+				if (burstPoint.Y < 100 || burstPoint.Y > viewSize.Y - 60 || burstPoint.X < 60 || burstPoint.X > viewSize.X - 60)
+					return null;
+				return burstPoint;
+			}
+		}
+		return null;
+	}
+
+	private void ShowEmotionEffect(string characterName, string emotionType, Vector2? portraitTopScreenPosition)
+	{
+		PackedScene scene = GD.Load<PackedScene>("res://scenes/EmotionEffect.tscn");
+		if (scene == null) return;
+		Node canvasLayer = GetNodeOrNull("CanvasLayer");
+		if (canvasLayer == null) return;
+		var effect = scene.Instantiate<EmotionEffect>();
+		if (effect == null) return;
+		canvasLayer.AddChild(effect);
+		effect.Play(emotionType, portraitTopScreenPosition);
+	}
+
+	private void CheckMidBattleEvents()
+	{
+		var evt = _activeMidBattleEvents.FirstOrDefault(e => e.Turn == _currentTurnNumber);
+		
+		if (!string.IsNullOrEmpty(evt.TimelinePath))
+		{
+			_activeMidBattleEvents.Remove(evt);
+			_isMidBattleDialogue = true; 
+			StartDialogue(evt.TimelinePath, evt.Background);
+		}
+		else
+		{
+			_currentState = State.PlayerTurn;
+			DeselectUnit();
+			_ = ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
+			ShowActions(true);
+		}
+	}
+
+	private void UpdateRelationship(string charName, string relType, int amount)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		if (companion != null && companion.Relationships.ContainsKey(relType))
+		{
+			companion.Relationships[relType] = Mathf.Clamp(companion.Relationships[relType] + amount, 0, 100);
+			ShowRelationshipNotification(charName, relType, amount);
+		}
+	}
+	
+	private void LoadMission(int index)
+	{
+		_currentMissionIndex = index;
+		string missionPath = _campaignMissions[index];
+		GD.Print($"[CAMPAIGN] Loading Mission {index + 1}: {missionPath}");
+
+		_scriptDatabase = StoryLoader.LoadScriptDatabase(missionPath);
+		_currentSection = _scriptDatabase.Keys.First();
+		_currentScriptIndex = -1;
+		_pendingSection = "";
+		_currentTurnNumber = 1;
+		_activeMidBattleEvents.Clear();
+
+		foreach (var unit in _party) unit.HealBetweenBattles();
+
+		// THE FIX: Always clear the board before generating a new one
+		ClearBoard(); 
+		GenerateGrid(); 
+		AdvanceScript();
+	}
+
+	private void ClearBoard()
+	{
+		// Destroy physical nodes on the board
+		foreach (var u in _units) if (IsInstanceValid(u)) u.QueueFree();
+		foreach (var o in _obstacles) if (IsInstanceValid(o)) o.QueueFree();
+		foreach (var g in _grid.Values) if (IsInstanceValid(g)) g.QueueFree();
+		
+		_units.Clear();
+		_obstacles.Clear();
+		_grid.Clear();
+		_activeDioramas.Clear();
+	}
+	
+	public CampConversation GetAvailableCampConversation(string characterName)
+	{
+		return CampConversationsPool
+			.Where(c => c.CharacterName == characterName)
+			.Where(c => !c.PlayOnce || !HasFlag("CampConv_" + c.TimelineName))
+			.Where(c => EvaluateCondition(c.Condition))
+			.OrderByDescending(c => c.Priority)
+			.FirstOrDefault();
+	}
+
+	private bool EvaluateCondition(string cond)
+	{
+		if (string.IsNullOrWhiteSpace(cond)) return true;
+		cond = cond.Trim();
+
+		if (cond.StartsWith("Rel:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string[] idParts = tokens[0].Split(':');
+				if (idParts.Length == 3)
+				{
+					int currentVal = GetRelationship(idParts[1], idParts[2]);
+					if (int.TryParse(tokens[2], out int target))
+					{
+						if (tokens[1] == ">") return currentVal > target;
+						if (tokens[1] == "<") return currentVal < target;
+						if (tokens[1] == ">=") return currentVal >= target;
+						if (tokens[1] == "<=") return currentVal <= target;
+						if (tokens[1] == "==") return currentVal == target;
+					}
+				}
+			}
+		}
+		else if (cond.StartsWith("!Flag:")) return !HasFlag(cond.Substring(6));
+		else if (cond.StartsWith("Flag:")) return HasFlag(cond.Substring(5));
+
+		return true; 
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: ScriptDumper.cs]
+
+using Godot;
+using System.Text;
+
+public partial class ScriptDumper : Node
+{
+	/// <summary>
+	/// Folder to scan for .cs files (change in Inspector if needed)
+	/// </summary>
+	[Export]
+	public string ScriptsFolder = "res://scripts/";
+
+	/// <summary>
+	/// Where the combined text file will be saved
+	/// </summary>
+	[Export]
+	public string OutputPath = "res://all_csharp_scripts.txt";
+
+	public override void _Ready()
+	{
+		// Run on the next frame so the node is fully initialized
+		CallDeferred(nameof(DumpAllScripts));
+	}
+
+	private void DumpAllScripts()
+	{
+		// Get all files in the folder (no need to open DirAccess manually)
+		string[] files = DirAccess.GetFilesAt(ScriptsFolder);
+
+		if (files == null || files.Length == 0)
+		{
+			GD.PrintErr("No files found in " + ScriptsFolder);
+			return;
+		}
+
+		var output = FileAccess.Open(OutputPath, FileAccess.ModeFlags.Write);
+		if (output == null)
+		{
+			GD.PrintErr("Failed to create output file: " + OutputPath);
+			return;
+		}
+
+		var sb = new StringBuilder();
+		int dumpedCount = 0;
+
+		// Simple header
+		sb.AppendLine("=== ALL C# SCRIPTS COMBINED ===");
+		sb.AppendLine($"Generated on: {System.DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+		sb.AppendLine($"Source folder: {ScriptsFolder}");
+		sb.AppendLine(new string('=', 90));
+		sb.AppendLine();
+
+		foreach (string fileName in files)
+		{
+			if (fileName.ToLower().EndsWith(".cs"))
+			{
+				string fullPath = ScriptsFolder.PathJoin(fileName);
+				string content = FileAccess.GetFileAsString(fullPath);
+
+				if (!string.IsNullOrEmpty(content))
+				{
+					sb.AppendLine($"[FILENAME: {fileName}]");
+					sb.AppendLine();
+					sb.AppendLine(content);
+					sb.AppendLine();
+					sb.AppendLine(new string('=', 90));
+					sb.AppendLine("\n");
+
+					dumpedCount++;
+				}
+			}
+		}
+
+		output.StoreString(sb.ToString());
+		output.Close();
+
+		GD.Print($"✅ SUCCESS! {dumpedCount} C# script(s) combined into:");
+		GD.Print(ProjectSettings.GlobalizePath(OutputPath));
+		GD.Print("You can now delete this node/scene.");
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: StoryBridge.cs]
+
+using Godot;
+
+public partial class StoryBridge : Node
+{
+	// Dialogic will call this globally!
+	public bool HasFlag(string flagName)
+	{
+		return GameManager.Instance != null && GameManager.Instance.HasFlag(flagName);
+	}
+
+	// Dialogic will call this globally!
+	public int GetRelationship(string charName, string relType)
+	{
+		if (GameManager.Instance != null)
+			return GameManager.Instance.GetRelationship(charName, relType);
+		
+		return 0;
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: StoryConstants.cs]
+
+using Godot;
+
+/// <summary>
+/// Central constants for story JSON and script execution.
+/// Keeps event types, paths, and default battle layout in one place.
+/// </summary>
+public static class StoryConstants
+{
+	// --- JSON event type strings (must match story/*.json "Type" field) ---
+	public const string EventDialogue = "Dialogue";
+	public const string EventBattle = "Battle";
+	public const string EventAddPartyMember = "AddPartyMember";
+	public const string EventJump = "Jump";
+
+	// --- Paths ---
+	public const string DefaultCampaignPath = "res://story/campaign.json";
+	public const string TimelinePathPrefix = "res://dialogic_timelines/";
+	public const string TimelineExtension = ".dtl";
+
+	// --- Default battle layout (used when JSON doesn't specify) ---
+	public static readonly Vector3[] DefaultFriendlySpawns = { new Vector3(0, 0, 4), new Vector3(2, 0, 4) };
+	public const float EnemyRowX = 6f;
+	public const float EnemySpacing = 2f;
+}
+
+
+==========================================================================================
+
+
+[FILENAME: StoryLoader.cs]
+
+using Godot;
+using System;
+using System.Collections.Generic;
+using System.Text.Json;
+
+/// <summary>
+/// Loads story JSON and converts it to the runtime script database.
+/// Single entry point for campaign + mission data and ScriptEvent execution.
+/// </summary>
+public static class StoryLoader
+{
+	static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+	{
+		PropertyNameCaseInsensitive = true
+	};
+
+	// --- Public API ---
+
+	/// <summary>Load campaign (list of mission paths). Uses default path if not specified.</summary>
+	public static CampaignData GetCampaignData(string jsonPath = null)
+	{
+		string path = string.IsNullOrEmpty(jsonPath) ? StoryConstants.DefaultCampaignPath : jsonPath;
+		return DeserializeFile<CampaignData>(path);
+	}
+
+	/// <summary>Load raw mission story data (sections + events). Used by pipeline and loader.</summary>
+	public static StoryData GetStoryData(string jsonPath)
+	{
+		if (string.IsNullOrEmpty(jsonPath)) return null;
+		return DeserializeFile<StoryData>(jsonPath);
+	}
+
+	/// <summary>Load a mission and convert to script database (section name → list of ScriptEvents).</summary>
+	public static Dictionary<string, List<ScriptEvent>> LoadScriptDatabase(string missionJsonPath)
+	{
+		StoryData data = GetStoryData(missionJsonPath);
+		if (data?.Sections == null) return new Dictionary<string, List<ScriptEvent>>();
+		return StoryToScriptMapper.ToScriptDatabase(data);
+	}
+
+	// --- File + JSON ---
+
+	static T DeserializeFile<T>(string path) where T : class
+	{
+		if (!FileAccess.FileExists(path))
+		{
+			if (typeof(T) == typeof(StoryData))
+				GD.PrintErr($"[StoryLoader] Missing file: {path}");
+			return null;
+		}
+		using var file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
+		return JsonSerializer.Deserialize<T>(file.GetAsText(), JsonOptions);
+	}
+}
+
+/// <summary>
+/// Maps StoryData (JSON) to runtime ScriptEvent structure.
+/// Keeps conversion logic in one place and uses StoryConstants.
+/// </summary>
+public static class StoryToScriptMapper
+{
+	public static Dictionary<string, List<ScriptEvent>> ToScriptDatabase(StoryData data)
+	{
+		var db = new Dictionary<string, List<ScriptEvent>>();
+		if (data?.Sections == null) return db;
+
+		foreach (var kvp in data.Sections)
+		{
+			string sectionName = kvp.Key;
+			var events = new List<ScriptEvent>();
+			if (kvp.Value?.Events != null)
+			{
+				foreach (StoryEvent ev in kvp.Value.Events)
+				{
+					ScriptEvent scriptEv = ToScriptEvent(ev);
+					if (scriptEv != null)
+						events.Add(scriptEv);
+				}
+			}
+			db[sectionName] = events;
+		}
+		return db;
+	}
+
+	static ScriptEvent ToScriptEvent(StoryEvent ev)
+	{
+		if (ev?.Type == null) return null;
+
+		switch (ev.Type)
+		{
+			case StoryConstants.EventAddPartyMember:
+				return ScriptEvent.AddPartyMember(ev.ProfileId ?? "", ev.IsPlayer);
+
+			case StoryConstants.EventDialogue:
+				string timelinePath = ToTimelinePath(ev.TimelineName);
+				return ScriptEvent.Dialogue(timelinePath, ev.Background);
+
+			case StoryConstants.EventJump:
+				return ScriptEvent.JumpToSection(ev.TargetSection ?? "");
+
+			case StoryConstants.EventBattle:
+				return ScriptEvent.Battle(ToBattleSetup(ev));
+			default:
+				return null;
+		}
+	}
+
+	static string ToTimelinePath(string timelineName)
+	{
+		if (string.IsNullOrEmpty(timelineName)) return null;
+		return StoryConstants.TimelinePathPrefix + timelineName + StoryConstants.TimelineExtension;
+	}
+
+	static BattleSetup ToBattleSetup(StoryEvent ev)
+	{
+		var battle = new BattleSetup
+		{
+			FriendlySpawns = new List<Vector3>(StoryConstants.DefaultFriendlySpawns),
+			ElevationEnabled = ev.ElevationEnabled
+		};
+
+		if (!string.IsNullOrEmpty(ev.Ground) && Enum.TryParse(ev.Ground, true, out GroundType ground))
+			battle.Ground = ground;
+		if (!string.IsNullOrEmpty(ev.Light) && Enum.TryParse(ev.Light, true, out LightingMood light))
+			battle.Light = light;
+
+		if (ev.Enemies != null)
+		{
+			for (int i = 0; i < ev.Enemies.Count; i++)
+			{
+				float x = StoryConstants.EnemyRowX + i * StoryConstants.EnemySpacing;
+				battle.Enemies.Add(new UnitSpawn(ev.Enemies[i], new Vector3(x, 0, 4)));
+			}
+		}
+
+		if (ev.MidBattleEvents != null)
+		{
+			foreach (var mid in ev.MidBattleEvents)
+			{
+				string path = ToTimelinePath(mid.TimelineName);
+				battle.MidBattleEvents.Add(new MidBattleEvent(mid.Turn, path, mid.Background));
+			}
+		}
+
+		return battle;
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: StoryModels.cs]
+
+using System.Collections.Generic;
+
+// --- Story JSON DTOs: match schema in story/campaign.json and story/mission_*.json ---
+
+public class CampaignData
+{
+	public System.Collections.Generic.List<string> Missions { get; set; }
+	public System.Collections.Generic.List<CampConversation> CampConversations { get; set; }
+}
+
+public class StoryData
+{
+	public Dictionary<string, StorySection> Sections { get; set; }
+	/// <summary>Optional: character name -> "Left"|"Right"|"Center" for portrait mirroring (match game unit DefaultFacing).</summary>
+	public Dictionary<string, string> DefaultFacings { get; set; }
+}
+public class StorySection { public List<StoryEvent> Events { get; set; } }
+
+public class StoryEvent
+{
+	public string Type { get; set; }
+	public string ProfileId { get; set; }
+	public string TimelineName { get; set; }
+	public string TargetSection { get; set; }
+	public List<string> Enemies { get; set; }
+	public string Background { get; set; }
+	public bool IsPlayer { get; set; }
+	public string Ground { get; set; }
+	public string Light { get; set; }
+	public bool ElevationEnabled { get; set; }
+	public List<StoryMidBattleEvent> MidBattleEvents { get; set; }
+	public List<DialogueStep> Steps { get; set; } 
+}
+
+public class StoryMidBattleEvent
+{
+	public int Turn { get; set; }
+	public string TimelineName { get; set; }
+	public string Background { get; set; }
+	public List<DialogueStep> Steps { get; set; }
+}
+
+public class DialogueChoice 
+{
+	public string Text { get; set; }
+	public string SetFlag { get; set; } // NEW: e.g., "TookTheGold"
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } 
+}
+
+public class DialogueStep 
+{
+	public string Action { get; set; } // Can now be "If", "ElseIf", "Else", or "SetFlag"
+	public string Condition { get; set; } // NEW: e.g., "Flag:TookTheGold" or "Rel:Ambrose:Trust > 50"
+	public string Character { get; set; }
+	public string Position { get; set; }
+	public string Facing { get; set; }
+	public string Speaker { get; set; } 
+	public string Text { get; set; }
+	public string Emotion { get; set; }
+	public string Value { get; set; } 
+	public System.Collections.Generic.List<DialogueChoice> Choices { get; set; }
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } // NEW: Holds the steps inside an If/Else block
+}
+
+public class CampConversation
+{
+	public string CharacterName { get; set; }
+	public string TimelineName { get; set; }
+	public int Priority { get; set; }
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
+	
+	// e.g. "Rel:Ambrose:Respect > 50" or "Flag:SavedTheVillage"
+	public string Condition { get; set; } 
+	
+	// If true, we automatically set a flag when played so it doesn't repeat forever
+	public bool PlayOnce { get; set; } = true; 
+}
+
+
+==========================================================================================
+
+
+[FILENAME: Tile.cs]
+
+// Tile.cs
+using Godot;
+
+[Tool]
+public partial class Tile : Node3D
+{
+	[Export] public Vector2I GridCoords { get; set; } = Vector2I.Zero;
+
+	public void Setup(Vector2I coords, float tileSize = 2f)
+	{
+		GridCoords = coords;
+		Position = new Vector3(coords.X * tileSize, 0.01f, coords.Y * tileSize);
+		
+		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
+		
+		// Clean up any old broken overlays from the previous attempts!
+		mesh.MaterialOverlay = null; 
+	}
+
+	public void SetHighlight(bool active, Color? customColor = null)
+	{
+		var mesh = GetNode<MeshInstance3D>("MeshInstance3D");
+		
+		// === THE FIX: Emission Glow! ===
+		// We grab the unique dirt/grass material that GameManager just assigned to this tile
+		if (mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
+		{
+			if (active)
+			{
+				Color glowColor = customColor ?? new Color(0, 1f, 0, 0.55f);
+				
+				mat.EmissionEnabled = true;
+				
+				// Strip the alpha out to use as a pure, solid light color
+				mat.Emission = new Color(glowColor.R, glowColor.G, glowColor.B);
+				
+				// JUICE: We use the alpha value of the color to determine how BRIGHT it glows!
+				// The soft blue movement tiles will emit a soft light, while the green hover will glow brightly!
+				mat.EmissionEnergyMultiplier = glowColor.A * 0.35f; 
+			}
+			else
+			{
+				// Turn off the light!
+				mat.EmissionEnabled = false;
+			}
+		}
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: Unit.cs]
+
+// Unit.cs
+using Godot;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+
+public partial class Unit : Node3D
+{
+	public bool IsFriendly = true;
+	public event System.Action<Unit> OnDied;
+	public PersistentUnit Data { get; private set; }
+	public bool HasMoved = false;
+	public bool HasAttacked = false;
+	public bool IsSelected { get; private set; } = false;
+	public UnitFacing CurrentFacing { get; private set; }
+
+	private Sprite3D _sprite;
+	private Label3D _targetIcon;
+	private SubViewport _uiViewport;
+	private Sprite3D _uiSprite;
+	private ProgressBar _hpBar;
+	private ProgressBar _hpPreviewBar;
+	private Label _hpLabel;
+	private ProgressBar _xpBar;
+	private Label _xpLabel;
+	private Tween _previewTween;
+	private bool _isPreviewing = false;
+	
+	private bool _isHovered = false;
+	private Tween _hoverTween;
+
+	public override void _Ready()
+	{
+		_sprite = GetNode<Sprite3D>("Sprite3D");
+		_targetIcon = new Label3D { Text = "▼", FontSize = 120, Modulate = new Color(1, 0.2f, 0.2f), OutlineModulate = new Color(0, 0, 0), OutlineSize = 10, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, Position = new Vector3(0, 2.9f, 0), Visible = false, RenderPriority = 20 };
+		AddChild(_targetIcon);
+
+		Tween bobTween = CreateTween().SetLoops();
+		bobTween.TweenProperty(_targetIcon, "position:y", 3.2f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		bobTween.TweenProperty(_targetIcon, "position:y", 2.9f, 0.4f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+
+		_uiViewport = new SubViewport { TransparentBg = true, Size = new Vector2I(200, 100), RenderTargetUpdateMode = SubViewport.UpdateMode.Always };
+		AddChild(_uiViewport);
+
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		vbox.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		vbox.AddThemeConstantOverride("separation", 6);
+		_uiViewport.AddChild(vbox);
+
+		// HP section
+		MarginContainer hpContainer = new MarginContainer { CustomMinimumSize = new Vector2(180, 35) };
+		_hpPreviewBar = new ProgressBar { CustomMinimumSize = new Vector2(180, 35), ShowPercentage = false, Step = 0.1 };
+		_hpPreviewBar.AddThemeStyleboxOverride("background", CreateRoundedStyle(new Color(0.1f, 0.1f, 0.1f, 0.9f)));
+		_hpPreviewBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(1f, 0f, 0f, 1f)));
+
+		_hpBar = new ProgressBar { CustomMinimumSize = new Vector2(180, 35), ShowPercentage = false, Step = 0.1 };
+		_hpBar.AddThemeStyleboxOverride("background", new StyleBoxEmpty());
+		_hpBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(0.2f, 0.9f, 0.2f, 1f)));
+
+		_hpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+		_hpLabel.AddThemeFontSizeOverride("font_size", 22);
+		_hpLabel.AddThemeConstantOverride("outline_size", 6);
+
+		hpContainer.AddChild(_hpPreviewBar);
+		hpContainer.AddChild(_hpBar);
+		hpContainer.AddChild(_hpLabel);
+		vbox.AddChild(hpContainer);
+
+		// === XP BAR – PERFECTLY CENTERED "Level X" ===
+		MarginContainer xpContainer = new MarginContainer { CustomMinimumSize = new Vector2(180, 35) };
+
+		_xpBar = new ProgressBar { 
+			CustomMinimumSize = new Vector2(180, 25), 
+			ShowPercentage = false, 
+			Step = 0.1f 
+		};
+		_xpBar.AddThemeStyleboxOverride("background", CreateRoundedStyle(new Color(0.1f, 0.1f, 0.1f, 0.9f)));
+		_xpBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(1f, 0.8f, 0f, 1f)));
+
+		_xpLabel = new Label 
+		{ 
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		
+		// === THE FIX ===
+		// This forces the label to expand and perfectly overlay the entire Progress Bar.
+		_xpLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		
+		_xpLabel.AddThemeFontSizeOverride("font_size", 16);
+		_xpLabel.AddThemeColorOverride("font_color", new Color(1f, 0.9f, 0.6f));
+		_xpLabel.AddThemeConstantOverride("outline_size", 5);
+
+		_xpBar.AddChild(_xpLabel);
+		xpContainer.AddChild(_xpBar);
+		vbox.AddChild(xpContainer);
+
+		_uiSprite = new Sprite3D { Texture = _uiViewport.GetTexture(), Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, RenderPriority = 10, PixelSize = 0.008f, Position = new Vector3(0, 2.1f, 0) };
+		AddChild(_uiSprite);
+	}
+
+	private StyleBoxFlat CreateRoundedStyle(Color color)
+	{
+		return new StyleBoxFlat { BgColor = color, CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthBottom = 3, BorderWidthTop = 3, BorderWidthLeft = 3, BorderWidthRight = 3, BorderColor = new Color(0, 0, 0, 1f) };
+	}
+
+	public void Setup(PersistentUnit data, bool isFriendly)
+	{
+		Data = data;
+		IsFriendly = isFriendly;
+		
+		// Initialize the facing state!
+		CurrentFacing = data.Profile.DefaultFacing;
+		
+		if (GameManager.Instance != null && GameManager.Instance.MasterTheme != null)
+		{
+			_hpLabel.Theme = GameManager.Instance.MasterTheme;
+			_xpLabel.Theme = GameManager.Instance.MasterTheme;
+		}
+		
+		_hpBar.MaxValue = Data.MaxHP;
+		_hpPreviewBar.MaxValue = Data.MaxHP;
+		
+		if (IsFriendly)
+		{
+			_xpBar.Visible = true;
+			_xpBar.MaxValue = Data.MaxXP;
+			_xpBar.Value = Data.CurrentXP;
+		}
+		else
+		{
+			_xpBar.Visible = false;
+			_hpBar.AddThemeStyleboxOverride("fill", CreateRoundedStyle(new Color(0.9f, 0.2f, 0.2f, 1f)));
+		}
+
+		Texture2D tex = GD.Load<Texture2D>(data.Profile.SpritePath);
+		if (tex != null)
+		{
+			_sprite.Texture = tex;
+			float scaleFactor = 1.8f / (tex.GetHeight() * _sprite.PixelSize);
+			_sprite.Scale = new Vector3(scaleFactor, scaleFactor, scaleFactor);
+			_sprite.SetMeta("BaseScale", _sprite.Scale);
+			
+			// Wipe out any broken outlines
+			foreach (Node child in _sprite.GetChildren()) child.QueueFree();
+
+			// === 1. NATIVE SPRITE3D SETUP ===
+			_sprite.MaterialOverride = null; // Clean out the corrupted material!
+			_sprite.AlphaCut = SpriteBase3D.AlphaCutMode.Discard;
+			_sprite.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+			_sprite.Shaded = true;
+			_sprite.Billboard = BaseMaterial3D.BillboardModeEnum.FixedY;
+			
+			// === 2. THE PERFECT OUTLINE ===
+			Sprite3D outline = new Sprite3D
+			{
+				Texture = tex,
+				PixelSize = _sprite.PixelSize,
+				Modulate = new Color(0, 0, 0, 1), // Pure black
+				AlphaCut = SpriteBase3D.AlphaCutMode.Discard,
+				CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, // Prevent double shadows
+				Shaded = false,
+				
+				// CRITICAL FIX: The outline MUST NOT billboard! 
+				// It natively inherits the parent's billboard rotation. This stops the matrix explosion!
+				Billboard = BaseMaterial3D.BillboardModeEnum.FixedY,
+				Scale = new Vector3(1.08f, 1.08f, 1.08f), // Slightly thicker
+				Position = new Vector3(0, 0, -0.02f), // Push safely backwards in local space
+				RenderPriority = -1 
+			};
+			_sprite.AddChild(outline);
+		}
+		
+		_sprite.SetMeta("BasePos", _sprite.Position);
+		
+		UpdateVisuals();
+	}
+
+	public void UpdateVisuals()
+	{
+		if (_sprite == null || Data == null) return;
+
+		// === NEW: Fetch total HP bounds and clamp if necessary! ===
+		int totalMaxHP = Data.GetTotalMaxHP();
+		if (Data.CurrentHP > totalMaxHP) Data.CurrentHP = totalMaxHP; 
+
+		if (!_isPreviewing)
+		{
+			_hpLabel.Text = $"{Data.CurrentHP}/{totalMaxHP}";   
+			_hpBar.MaxValue = totalMaxHP; // Ensure the bar resizes!
+			_hpPreviewBar.MaxValue = totalMaxHP; 
+			CreateTween().TweenProperty(_hpBar, "value", (double)Data.CurrentHP, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			_hpPreviewBar.Value = Data.CurrentHP;
+		}
+
+		if (IsFriendly) _xpLabel.Text = $"Level {Data.Level}";
+
+		// === 3. HDR COLORS (NATIVE EMISSION) ===
+		// By pushing RGB values above 1.0, Godot natively makes them emit light!
+		Color spriteColor;
+		if (IsSelected) 
+			spriteColor = new Color(1.6f, 1.5f, 0.7f, 1.0f); // Bright glowing yellow
+		else if (IsFriendly && HasMoved && HasAttacked) 
+			spriteColor = new Color(0.4f, 0.4f, 0.4f, 1.0f); // True dark grey for exhausted
+		else if (IsFriendly) 
+			spriteColor = new Color(1.2f, 1.2f, 1.2f, 1.0f); // 20% HDR light emission
+		else 
+			spriteColor = new Color(1.3f, 0.9f, 0.9f, 1.0f); // Emissive red tint
+
+		if (!_isPreviewing) _sprite.Modulate = spriteColor;
+	}
+
+	// === DAMAGE RANDOMIZATION (new) ===
+	public int GetMinDamage() => Mathf.FloorToInt(Data.AttackDamage * 0.8f);
+	public int GetMaxDamage() => Mathf.CeilToInt(Data.AttackDamage * 1.2f);
+
+	public void PreviewDamage(int dmg)   // Called with MIN damage for preview
+	{
+		if (_isPreviewing) return;
+		_isPreviewing = true;
+		int newHp = Mathf.Max(0, Data.CurrentHP - dmg);
+
+		_hpBar.Value = newHp;
+		_hpLabel.Text = $"{newHp}/{Data.MaxHP} (-{Mathf.Min(dmg, Data.CurrentHP)})";
+
+		if (_previewTween != null && _previewTween.IsValid()) _previewTween.Kill();
+		_previewTween = CreateTween().SetLoops();
+
+		StyleBoxFlat previewStyle = (StyleBoxFlat)_hpPreviewBar.GetThemeStylebox("fill");
+		_previewTween.TweenProperty(previewStyle, "bg_color", new Color(1f, 1f, 1f, 1f), 0.15f);
+		_previewTween.TweenProperty(previewStyle, "bg_color", new Color(1f, 0f, 0f, 1f), 0.15f);
+
+		if (newHp <= 0)
+		{
+			_previewTween.Parallel().TweenProperty(_sprite, "modulate", new Color(5f, 5f, 5f, 1f), 0.15f);
+			_previewTween.Parallel().TweenProperty(_sprite, "modulate", new Color(1f, 0f, 0f, 1f), 0.15f).SetDelay(0.15f);
+		}
+	}
+
+	public void ClearPreview()
+	{
+		if (!_isPreviewing) return;
+		_isPreviewing = false;
+		if (_previewTween != null && _previewTween.IsValid()) _previewTween.Kill();
+
+		StyleBoxFlat previewStyle = (StyleBoxFlat)_hpPreviewBar.GetThemeStylebox("fill");
+		previewStyle.BgColor = new Color(1f, 0f, 0f, 1f);
+		UpdateVisuals();
+	}
+
+	public async Task TakeDamage(int dmg, Unit attacker = null)
+	{
+		ClearPreview();
+		Data.CurrentHP -= dmg;
+		if (Data.CurrentHP < 0) Data.CurrentHP = 0;
+		UpdateVisuals();
+
+		// JUICE: Trigger hit sparks!
+		if (dmg > 0) SpawnHitParticles();
+
+		if (Data.CurrentHP <= 0)
+		{
+			// JUICE: Squash down flat before popping out of existence!
+			Tween deathTween = CreateTween();
+			Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+			
+			// Squash wide and flat
+			deathTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.5f, baseScale.Y * 0.2f, baseScale.Z), 0.15f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			
+			// Shrink into nothingness
+			deathTween.TweenProperty(this, "scale", new Vector3(0.001f, 0.001f, 0.001f), 0.15f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			
+			await ToSignal(deathTween, Tween.SignalName.Finished);
+			
+			// JUICE: Trigger the massive death poof exactly as the unit vanishes
+			SpawnDeathParticles();
+			
+			Visible = false; // Hide completely so they don't block the camera
+
+			if (attacker != null && !this.IsFriendly)
+			{
+				await GameManager.Instance.RollForLoot();
+				await attacker.GainXP(this.Data.XPReward);
+			}
+
+			OnDied?.Invoke(this);
+			QueueFree();
+		}
+	}
+
+	public async Task GainXP(int amount)
+	{
+		if (!IsFriendly) return;
+		Data.CurrentXP += amount;
+		Tween xpTween = CreateTween();
+		xpTween.TweenProperty(_xpBar, "value", (double)Data.CurrentXP, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		await ToSignal(GetTree().CreateTimer(0.6f), "timeout");
+
+		if (Data.CurrentXP >= Data.MaxXP)
+		{
+			Data.Level++;
+			Data.CurrentXP -= Data.MaxXP;
+			Data.MaxXP = Mathf.RoundToInt(Data.MaxXP * 1.5f);
+
+			Label3D lvlUp = new Label3D { Text = "LEVEL UP!", Modulate = new Color(1, 0.8f, 0), FontSize = 80, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, OutlineModulate = new Color(0,0,0), OutlineSize = 10, Position = GlobalPosition + new Vector3(0, 3f, 0) };
+			GetParent().AddChild(lvlUp);
+
+			Tween lvlTween = CreateTween();
+			lvlTween.TweenProperty(lvlUp, "position:y", lvlUp.Position.Y + 1.5f, 1.5f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			lvlTween.Parallel().TweenProperty(lvlUp, "modulate:a", 0f, 1.5f).SetEase(Tween.EaseType.In);
+			lvlTween.Finished += () => lvlUp.QueueFree();
+
+			_xpBar.MaxValue = Data.MaxXP;
+			_xpBar.Value = 0;
+			UpdateVisuals();
+
+			await GameManager.Instance.ShowLevelUpScreen(this);
+			await GainXP(0);
+		}
+	}
+
+	public async Task MoveAlongPath(List<Vector3> path)
+	{
+		HasMoved = true;
+		UpdateVisuals();
+
+		foreach (Vector3 stepPos in path)
+		{
+			// === THE FIX: Turn to face the next tile BEFORE hopping! ===
+			await FaceDirection(stepPos);
+			
+			Tween moveTween = CreateTween();
+			// Fast horizontal movement to the next tile
+			moveTween.Parallel().TweenProperty(this, "position:x", stepPos.X, 0.18f);
+			moveTween.Parallel().TweenProperty(this, "position:z", stepPos.Z, 0.18f);
+
+			// Board-game style plumbob hop
+			Tween hopTween = CreateTween();
+			float originalY = Position.Y;
+			
+			// === THE FIX: Calculate a dynamic hop peak and land on stepPos.Y ===
+			// By taking the Max of the start and end heights, we ensure the unit 
+			// hops cleanly OVER the lip of a hill instead of clipping through it!
+			float hopPeak = Mathf.Max(originalY, stepPos.Y) + 0.8f;
+
+			hopTween.TweenProperty(this, "position:y", hopPeak, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+			
+			// Tween back down to stepPos.Y, NOT originalY!
+			hopTween.TweenProperty(this, "position:y", stepPos.Y, 0.09f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+
+			// Wait for this specific tile hop to finish before starting the next one
+			await ToSignal(moveTween, "finished");
+		}
+	}
+	
+	public void SetHovered(bool hovered, bool isTargetableEnemy = false)
+	{
+		if (_isHovered == hovered) return;
+		
+		// If we hover an enemy we can't attack, just record the hover state and exit immediately.
+		if (hovered && !IsFriendly && !isTargetableEnemy)
+		{
+			_isHovered = hovered;
+			return;
+		}
+		
+		_isHovered = hovered;
+
+		if (_hoverTween != null && _hoverTween.IsValid()) _hoverTween.Kill();
+		_hoverTween = CreateTween();
+
+		Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+		
+		// Fetch the natural standing position
+		Vector3 basePos = _sprite.HasMeta("BasePos") ? _sprite.GetMeta("BasePos").AsVector3() : _sprite.Position; 
+
+		if (hovered)
+		{
+			if (IsFriendly)
+			{
+				_hoverTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.05f, baseScale.Y * 1.15f, baseScale.Z * 1.05f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+				
+				// Bounce relative to BasePos, not 0!
+				_hoverTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y + 0.15f, 0.15f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			}
+			else if (isTargetableEnemy)
+			{
+				_hoverTween.TweenProperty(_sprite, "scale", new Vector3(baseScale.X * 1.25f, baseScale.Y * 0.9f, baseScale.Z * 1.25f), 0.1f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", 8f, 0.05f);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", -8f, 0.05f);
+				_hoverTween.TweenProperty(_sprite, "rotation_degrees:z", 0f, 0.05f);
+			}
+		}
+		else
+		{
+			_hoverTween.TweenProperty(_sprite, "scale", baseScale, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			
+			// Return to BasePos, NOT 0f!
+			_hoverTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y, 0.2f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			_hoverTween.Parallel().TweenProperty(_sprite, "rotation_degrees:z", 0f, 0.1f);
+		}
+	}
+	
+	// === NEW: Game Juicy Flip Animation ===
+// === NEW: Game Juicy Flip Animation (Isometric Screen-Space Fixed) ===
+	public async Task FaceDirection(Vector3 targetGlobalPos)
+	{
+		if (Data.Profile.DefaultFacing == UnitFacing.Center) return;
+
+		// 1. Get the active camera
+		Camera3D cam = GetViewport().GetCamera3D();
+		if (cam == null) return;
+
+		// 2. Get the vector pointing from the unit to the target
+		Vector3 moveDir = targetGlobalPos - GlobalPosition;
+
+		// 3. THE MAGIC: Project that movement against the Camera's visual "Right" axis.
+		// Positive = Screen Right. Negative = Screen Left. Zero = Straight Up or Down!
+		float screenRightDiff = moveDir.Dot(cam.GlobalTransform.Basis.X);
+
+		// If the horizontal screen difference is tiny, they are moving purely straight up or down!
+		if (Mathf.Abs(screenRightDiff) < 0.1f) return; 
+
+		UnitFacing desiredFacing = screenRightDiff > 0 ? UnitFacing.Right : UnitFacing.Left;
+
+		if (CurrentFacing != desiredFacing)
+		{
+			CurrentFacing = desiredFacing;
+
+			Vector3 basePos = _sprite.HasMeta("BasePos") ? _sprite.GetMeta("BasePos").AsVector3() : _sprite.Position;
+			Vector3 baseScale = _sprite.HasMeta("BaseScale") ? _sprite.GetMeta("BaseScale").AsVector3() : _sprite.Scale;
+
+			Tween flipTween = CreateTween();
+			
+			// Hop up and squash horizontally to an invisible sliver
+			flipTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y + 0.6f, 0.12f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+			flipTween.Parallel().TweenProperty(_sprite, "scale:x", 0.01f, 0.12f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+			
+			await ToSignal(flipTween, Tween.SignalName.Finished);
+
+			// While squashed to 0.01 width, flip the sprite!
+			bool isNativeFlipped = (CurrentFacing != Data.Profile.DefaultFacing);
+			_sprite.FlipH = isNativeFlipped;
+			
+			// Also flip the child outline if it exists
+			if (_sprite.GetChildCount() > 0 && _sprite.GetChild(0) is Sprite3D outline)
+			{
+				outline.FlipH = isNativeFlipped;
+			}
+
+			Tween landTween = CreateTween();
+			
+			// Slam back down and pop back to full width
+			landTween.Parallel().TweenProperty(_sprite, "position:y", basePos.Y, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			landTween.Parallel().TweenProperty(_sprite, "scale:x", baseScale.X, 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+			await ToSignal(landTween, Tween.SignalName.Finished);
+		}
+	}
+	
+	private void SpawnHitParticles()
+	{
+		CpuParticles3D particles = new CpuParticles3D {
+			Emitting = false,
+			OneShot = true,
+			Explosiveness = 0.9f, // All particles burst at once
+			Amount = 12,
+			Lifetime = 0.5f,
+			Position = new Vector3(0, 1.2f, 0) // Centered on the sprite's chest/head
+		};
+
+		// Make them look like little cartoony 2D impact sparks
+		particles.Mesh = new BoxMesh { Size = new Vector3(0.15f, 0.15f, 0.15f) };
+		particles.MaterialOverride = new StandardMaterial3D {
+			AlbedoColor = new Color(1f, 0.9f, 0.2f), // Flashy yellow
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, // No shadows!
+			NoDepthTest = true // Always draw on top
+		};
+
+		// Physics: Explode upwards and outwards
+		particles.Direction = new Vector3(0, 1, 0);
+		particles.Spread = 90f;
+		particles.InitialVelocityMin = 4f;
+		particles.InitialVelocityMax = 8f;
+		particles.Gravity = new Vector3(0, -15f, 0); // Heavy gravity snaps them down
+
+		// Shrink to zero over their lifetime
+		Curve scaleCurve = new Curve();
+		scaleCurve.AddPoint(new Vector2(0, 1));
+		scaleCurve.AddPoint(new Vector2(1, 0));
+		particles.ScaleAmountCurve = scaleCurve;
+
+		AddChild(particles);
+		particles.Emitting = true;
+
+		// Clean up the node after the animation finishes
+		GetTree().CreateTimer(0.6f).Timeout += () => { 
+			if (GodotObject.IsInstanceValid(particles)) particles.QueueFree(); 
+		};
+	}
+
+	private void SpawnDeathParticles()
+	{
+		CpuParticles3D particles = new CpuParticles3D {
+			Emitting = false,
+			OneShot = true,
+			Explosiveness = 1.0f,
+			Amount = 25,
+			Lifetime = 1.0f
+		};
+
+		// Soft, cartoony poof clouds
+		particles.Mesh = new SphereMesh { Radius = 0.25f, Height = 0.5f };
+		particles.MaterialOverride = new StandardMaterial3D {
+			AlbedoColor = IsFriendly ? new Color(0.2f, 0.5f, 1f) : new Color(0.8f, 0.2f, 0.2f), // Blue for friends, Red for enemies
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded
+		};
+
+		// Physics: 360-degree burst
+		particles.Direction = new Vector3(0, 1, 0);
+		particles.Spread = 180f; 
+		particles.InitialVelocityMin = 5f;
+		particles.InitialVelocityMax = 10f;
+		particles.Gravity = new Vector3(0, -12f, 0); 
+
+		Curve scaleCurve = new Curve();
+		scaleCurve.AddPoint(new Vector2(0, 1));
+		scaleCurve.AddPoint(new Vector2(0.7f, 0.8f)); // Hold shape...
+		scaleCurve.AddPoint(new Vector2(1, 0));       // ...then shrink fast at the end
+		particles.ScaleAmountCurve = scaleCurve;
+
+		// CRITICAL: We parent this to the WORLD (GameManager), not the Unit!
+		// Otherwise, when the Unit is destroyed, the particles will instantly vanish.
+		GetParent().AddChild(particles);
+		particles.GlobalPosition = this.GlobalPosition + new Vector3(0, 1f, 0);
+		
+		particles.Emitting = true;
+		GetTree().CreateTimer(1.2f).Timeout += () => { 
+			if (GodotObject.IsInstanceValid(particles)) particles.QueueFree(); 
+		};
+	}
+
+	public void SetSelected(bool selected) { IsSelected = selected; UpdateVisuals(); }
+	public void NewTurn() { HasMoved = false; HasAttacked = false; IsSelected = false; UpdateVisuals(); }
+	public void SetTargetable(bool isTargetable) { if (_targetIcon != null) _targetIcon.Visible = isTargetable; }
+}
+
+
+==========================================================================================
+
+

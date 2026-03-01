@@ -5,6 +5,7 @@ using System.Collections.Generic;
 public class CampaignData
 {
 	public System.Collections.Generic.List<string> Missions { get; set; }
+	public System.Collections.Generic.List<CampConversation> CampConversations { get; set; }
 }
 
 public class StoryData
@@ -59,4 +60,18 @@ public class DialogueStep
 	public string Value { get; set; } 
 	public System.Collections.Generic.List<DialogueChoice> Choices { get; set; }
 	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } // NEW: Holds the steps inside an If/Else block
+}
+
+public class CampConversation
+{
+	public string CharacterName { get; set; }
+	public string TimelineName { get; set; }
+	public int Priority { get; set; }
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
+	
+	// e.g. "Rel:Ambrose:Respect > 50" or "Flag:SavedTheVillage"
+	public string Condition { get; set; } 
+	
+	// If true, we automatically set a flag when played so it doesn't repeat forever
+	public bool PlayOnce { get; set; } = true; 
 }

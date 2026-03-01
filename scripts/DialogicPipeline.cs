@@ -39,6 +39,19 @@ public partial class DialogicPipeline : Node
 			BuildInheritanceMap(missionData);
 			GenerateFiles(missionData);
 		}
+		
+		if (campaign.CampConversations != null)
+		{
+			HashSet<string> uniqueCampCharacters = new HashSet<string>();
+			foreach (var campConv in campaign.CampConversations)
+			{
+				if (campConv.Steps != null && campConv.Steps.Count > 0)
+				{
+					// We pass null for StoryData here because camp convos don't have mission-level default facings
+					WriteTimelineFile(campConv.TimelineName, campConv.Steps, uniqueCampCharacters, new StoryData());
+				}
+			}
+		}
 
 		GD.Print("[PIPELINE] Dialogic Generation Complete! Reloading resources...");
 		EditorInterface.Singleton.GetResourceFilesystem().Scan();

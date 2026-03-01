@@ -36,7 +36,7 @@ public partial class GameManager : Node3D
 	[Export] public Godot.Collections.Array<PackedScene> BackgroundDioramas;
 	
 	// === STATE TRACKING ===
-	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene, PartyMenu }
+	private enum State { PlayerTurn, EnemyTurn, SelectingAttackTarget, Cutscene, PartyMenu, Camp }
 	private State _currentState = State.Cutscene;
 	private List<string> _campaignMissions = new();
 	private int _currentMissionIndex = 0;
@@ -57,6 +57,7 @@ public partial class GameManager : Node3D
 
 	// === GAME DATA ===
 	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
+	public List<CampConversation> CampConversationsPool = new();
 	private List<PersistentUnit> _party = new(); 
 	public List<GameItem> Inventory = new();
 	public System.Collections.Generic.Dictionary<string, Equipment> ItemDatabase = new();
@@ -117,7 +118,14 @@ public partial class GameManager : Node3D
 		if (campaign != null && campaign.Missions.Count > 0)
 		{
 			_campaignMissions = campaign.Missions;
-			LoadMission(0); // This handles GenerateGrid() and AdvanceScript() internally!
+			
+			// === NEW: Store the camp conversations! ===
+			if (campaign.CampConversations != null)
+			{
+				CampConversationsPool = campaign.CampConversations;
+			}
+			
+			LoadMission(0); 
 		}
 		else
 		{
@@ -287,7 +295,7 @@ public partial class GameManager : Node3D
 		// Shrink the background away with a snappy bounce
 		if (IsInstanceValid(_activeDialogueBackground))
 		{
-			TextureRect bg = _activeDialogueBackground; // Capture reference
+			TextureRect bg = _activeDialogueBackground; 
 			CanvasLayer layer = _dialogueBgLayer;
 			_activeDialogueBackground = null;
 			_dialogueBgLayer = null;
@@ -303,7 +311,16 @@ public partial class GameManager : Node3D
 			_isMidBattleDialogue = false;
 			CheckMidBattleEvents();
 		}
-		else AdvanceScript(); 
+		// === NEW: If we are in Camp, restore the UI and refresh the bubbles! ===
+		else if (_currentState == State.Camp)
+		{
+			if (_campUIRoot != null) _campUIRoot.Visible = true;
+			RefreshCampSpeechBubbles();
+		}
+		else 
+		{
+			AdvanceScript(); 
+		}
 	}
 	
 	public bool HasFlag(string flagName)
@@ -494,5 +511,46 @@ public partial class GameManager : Node3D
 		_obstacles.Clear();
 		_grid.Clear();
 		_activeDioramas.Clear();
+	}
+	
+	public CampConversation GetAvailableCampConversation(string characterName)
+	{
+		return CampConversationsPool
+			.Where(c => c.CharacterName == characterName)
+			.Where(c => !c.PlayOnce || !HasFlag("CampConv_" + c.TimelineName))
+			.Where(c => EvaluateCondition(c.Condition))
+			.OrderByDescending(c => c.Priority)
+			.FirstOrDefault();
+	}
+
+	private bool EvaluateCondition(string cond)
+	{
+		if (string.IsNullOrWhiteSpace(cond)) return true;
+		cond = cond.Trim();
+
+		if (cond.StartsWith("Rel:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string[] idParts = tokens[0].Split(':');
+				if (idParts.Length == 3)
+				{
+					int currentVal = GetRelationship(idParts[1], idParts[2]);
+					if (int.TryParse(tokens[2], out int target))
+					{
+						if (tokens[1] == ">") return currentVal > target;
+						if (tokens[1] == "<") return currentVal < target;
+						if (tokens[1] == ">=") return currentVal >= target;
+						if (tokens[1] == "<=") return currentVal <= target;
+						if (tokens[1] == "==") return currentVal == target;
+					}
+				}
+			}
+		}
+		else if (cond.StartsWith("!Flag:")) return !HasFlag(cond.Substring(6));
+		else if (cond.StartsWith("Flag:")) return HasFlag(cond.Substring(5));
+
+		return true; 
 	}
 }

@@ -1,0 +1,5 @@
+join Dougal 3 [mirrored="true"]
+
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:bravery"]
+Dougal: No loose ends on the docks. You've got a cold streak, Ambrose. I respect that.

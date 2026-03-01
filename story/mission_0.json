@@ -68,11 +68,7 @@
 				  "Steps": [
 					{
 					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Agreement:10"
-					},
-					{
-					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Respect:15"
+					  "Value": "Rel:Dougal:Agreement:20"
 					},
 					{
 					  "Speaker": "Dougal",

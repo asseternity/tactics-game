@@ -16,8 +16,7 @@ Guard: Maker's breath... please! I yield! The Magister didn't pay us enough to d
 
 - We don't leave loose ends. Finish him, Dougal.
 	[signal arg="SetFlag:KilledDockGuard"]
-	[signal arg="Rel:Dougal:Agreement:10"]
-	[signal arg="Rel:Dougal:Respect:15"]
+	[signal arg="Rel:Dougal:Agreement:20"]
 	update Dougal [animation="Bounce" length="0.4" wait="true"]
 	[signal arg="Emotion:Dougal:bravery"]
 	Dougal: Pragmatic. I like it. No witnesses to warn the estate.

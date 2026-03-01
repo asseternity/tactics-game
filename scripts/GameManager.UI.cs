@@ -281,15 +281,35 @@ public partial class GameManager
 
 	private void TogglePartyMenu()
 	{
-		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu) return;
+		// FIX 1: Allow opening during Camp state!
+		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu && _currentState != State.Camp) return;
 
 		if (_activePartyMenu != null)
 		{
 			Tween outTween = CreateTween();
 			outTween.TweenProperty(_activePartyMenu, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			outTween.Finished += () => { _activePartyMenu.QueueFree(); _activePartyMenu = null; if (DimOverlay != null) DimOverlay.Visible = false; _currentState = State.PlayerTurn; ShowActions(true); };
+			outTween.Finished += () => { 
+				_activePartyMenu.QueueFree(); 
+				_activePartyMenu = null; 
+				if (DimOverlay != null) DimOverlay.Visible = false; 
+				
+				// FIX 2: Return to the correct state depending on where we opened it!
+				if (_campNodes.Count > 0) 
+				{
+					_currentState = State.Camp;
+					if (_campUIRoot != null) _campUIRoot.Visible = true;
+				}
+				else 
+				{
+					_currentState = State.PlayerTurn; 
+					ShowActions(true); 
+				}
+			};
 			return;
 		}
+
+		// FIX 3: Hide the Camp UI while the menu is open so it isn't distracting in the background
+		if (_currentState == State.Camp && _campUIRoot != null) _campUIRoot.Visible = false;
 
 		_currentState = State.PartyMenu; ShowActions(false);
 		if (DimOverlay != null) DimOverlay.Visible = true;
@@ -297,6 +317,7 @@ public partial class GameManager
 		_activePartyMenu = new CenterContainer(); _activePartyMenu.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activePartyMenu); else AddChild(_activePartyMenu);
 
+		// --- RESTORED UI BUILDING CODE ---
 		VBoxContainer menuWrapper = new VBoxContainer(); menuWrapper.AddThemeConstantOverride("separation", 20); _activePartyMenu.AddChild(menuWrapper);
 		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 480), Theme = MasterTheme }; menuWrapper.AddChild(mainPanel);
 		HBoxContainer mainHBox = new HBoxContainer(); mainPanel.AddChild(mainHBox);

@@ -28,6 +28,8 @@ directories/dch_directory={
 "Orc": "res://dialogic_characters/Orc.dch"
 }
 directories/dtl_directory={
+"Camp_Dougal_PraisesMercy": "res://dialogic_timelines/Camp_Dougal_PraisesMercy.dtl",
+"Camp_Dougal_PraisesRuthlessness": "res://dialogic_timelines/Camp_Dougal_PraisesRuthlessness.dtl",
 "MidBattle_OrcTaunt": "res://dialogic_timelines/MidBattle_OrcTaunt.dtl",
 "Mission0_Intro": "res://dialogic_timelines/Mission0_Intro.dtl",
 "Mission1_Courtyard": "res://dialogic_timelines/Mission1_Courtyard.dtl",

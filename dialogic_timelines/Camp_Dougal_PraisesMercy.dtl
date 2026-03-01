@@ -1,0 +1,5 @@
+join Dougal 3 [mirrored="true"]
+
+update Dougal [animation="Bounce" length="0.4" wait="true"]
+[signal arg="Emotion:Dougal:confusion"]
+Dougal: I still think you're a fool for letting that guard live. But... maybe this crew needed a fool with a conscience.

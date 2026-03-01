@@ -1,10 +1,11 @@
-[gd_scene load_steps=7 format=3 uid="uid://dy17ve13o5peq"]
+[gd_scene load_steps=8 format=3 uid="uid://dy17ve13o5peq"]
 
 [ext_resource type="Script" uid="uid://djhxj33ngqjoq" path="res://scripts/GameManager.cs" id="1_elqb8"]
 [ext_resource type="PackedScene" uid="uid://blnfsixogtwt7" path="res://scenes/Unit.tscn" id="2_rvslj"]
 [ext_resource type="PackedScene" uid="uid://c3i82d5asvcrd" path="res://scenes/Tile.tscn" id="3_rarhs"]
 [ext_resource type="Texture2D" uid="uid://bbnjt4j5wwgw1" path="res://cursors/Cursor1.png" id="4_rarhs"]
 [ext_resource type="PackedScene" uid="uid://capl25p2x6cnc" path="res://3d/City_House_2/City_House_2_BI.fbx" id="5_vcsgt"]
+[ext_resource type="Script" uid="uid://tyx4xjm83gwd" path="res://scripts/ScriptDumper.cs" id="6_c01mt"]
 
 [sub_resource type="Environment" id="Environment_rvslj"]
 tonemap_mode = 3
@@ -105,3 +106,6 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.011764706, 0.011764706, 0.011764706, 0.827451)
+
+[node name="ScriptDumper" type="Node" parent="."]
+script = ExtResource("6_c01mt")

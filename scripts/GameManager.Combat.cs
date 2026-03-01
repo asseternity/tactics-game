@@ -63,38 +63,109 @@ public partial class GameManager
 	{
 		await attacker.FaceDirection(target.GlobalPosition);
 
-		Vector3 startPos = attacker.GlobalPosition;
-		Vector3 attackDirection = (target.GlobalPosition - startPos).Normalized();
-		Vector3 lungePos = startPos + (attackDirection * 0.8f);
+		// 1. CAPTURE ORIGINAL STATE (position only; rotation stays fixed for lateral-only movement)
+		Vector3 originalCamPos = Cam.GlobalPosition;
+		float originalFov = Cam.Fov;
+		float originalSize = Cam.Size;
 
-		Tween tween = CreateTween();
-		tween.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
-		tween.TweenProperty(attacker, "global_position", startPos, 0.2f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.InOut);
+		// 2. CALCULATE THE "FIGHT CENTER"
+		// Mid-point between units, raised slightly for chest-height focus
+		Vector3 actionCenter = (attacker.GlobalPosition + target.GlobalPosition) / 2f + new Vector3(0, 1.0f, 0);
+
+		// 3. LATERAL-ONLY PAN: Move camera in X/Z only so actionCenter is centered in view; no rotation
+		// Camera forward in Godot is -Basis.Z
+		Vector3 forward = -Cam.GlobalTransform.Basis.Z;
+		if (forward.LengthSquared() < 0.0001f) forward = new Vector3(0, 0, -1);
+		else forward = forward.Normalized();
+		Vector3 targetCamPos;
+		if (Mathf.Abs(forward.Y) >= 0.0001f)
+		{
+			// Angled camera: place camera so center ray (at same height) passes through actionCenter
+			float t = (actionCenter.Y - originalCamPos.Y) / forward.Y;
+			targetCamPos = new Vector3(
+				actionCenter.X - t * forward.X,
+				originalCamPos.Y,
+				actionCenter.Z - t * forward.Z
+			);
+		}
+		else
+		{
+			// Top-down: pan in XZ so projected center aligns
+			Vector3 toCenter = actionCenter - originalCamPos;
+			float t = toCenter.Dot(forward) / forward.LengthSquared();
+			Vector3 delta = toCenter - (t * forward);
+			delta.Y = 0;
+			targetCamPos = originalCamPos + delta;
+		}
+
+		// 4. ZOOM & PAN IN (smooth, lateral only, no angle change)
+		Tween zoomIn = CreateTween().SetParallel(true);
+		zoomIn.TweenProperty(Cam, "global_position", targetCamPos, 0.45f)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+			zoomIn.TweenProperty(Cam, "size", originalSize * 0.85f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		else
+			zoomIn.TweenProperty(Cam, "fov", originalFov - 10f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+
+		await ToSignal(zoomIn, "finished");
+		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+
+		// 4. THE ACTION (Lunge)
+		Vector3 attackerStartPos = attacker.GlobalPosition;
+		Vector3 attackDir = (target.GlobalPosition - attackerStartPos).Normalized();
+		Vector3 lungePos = attackerStartPos + (attackDir * 0.8f);
+
+		Tween lunge = CreateTween();
+		lunge.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine);
+		lunge.TweenProperty(attacker, "global_position", attackerStartPos, 0.2f).SetTrans(Tween.TransitionType.Quad);
 
 		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
 
+		// 5. IMPACT & SHAKE
 		int damage = GD.RandRange(attacker.GetMinDamage(), attacker.GetMaxDamage());
-		
-		if (attacker.GlobalPosition.Y > target.GlobalPosition.Y + 0.15f) 
-		{
-			damage += 1;
-			SpawnFloatingText(target.GlobalPosition + new Vector3(0, 0.6f, 0), "HIGH GROUND!", new Color(1f, 0.85f, 0.2f), 22);
-		}
-
 		SpawnFloatingText(target.GlobalPosition, damage.ToString(), new Color(1, 0.2f, 0.2f));
-
-		await target.TakeDamage(damage, attacker);
-
-		if (target.GetNodeOrNull<Sprite3D>("Sprite3D") is Sprite3D targetSprite)
-		{
-			Tween flashTween = CreateTween();
-			flashTween.TweenProperty(targetSprite, "modulate", new Color(5, 0.5f, 0.5f), 0.05f);
-			flashTween.TweenProperty(targetSprite, "modulate", new Color(1, 1, 1), 0.1f);
+		
+		var damageTask = target.TakeDamage(damage, attacker);
+		
+		// Shake the camera using local relative offsets
+		for (int i = 0; i < 6; i++) {
+			float s = 0.15f;
+			Vector3 shakeOffset = new Vector3((float)GD.RandRange(-s, s), (float)GD.RandRange(-s, s), 0);
+			Cam.HOffset = shakeOffset.X;
+			Cam.VOffset = shakeOffset.Y;
+			await ToSignal(GetTree().CreateTimer(0.03f), "timeout");
 		}
+		Cam.HOffset = 0; Cam.VOffset = 0;
 
+		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
+
+		// 6. ZOOM OUT & RESET (position and zoom only; rotation never changed)
+		Tween zoomOut = CreateTween().SetParallel(true);
+		zoomOut.TweenProperty(Cam, "global_position", originalCamPos, 0.5f)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+			zoomOut.TweenProperty(Cam, "size", originalSize, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+		else
+			zoomOut.TweenProperty(Cam, "fov", originalFov, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+
+		await ToSignal(zoomOut, "finished");
+		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+
+		// 7. FINALIZE
 		attacker.HasAttacked = true;
 		attacker.UpdateVisuals();
 		RefreshTargetIcons();
+		await damageTask; 
+	}
+
+	// Helper to calculate how much to shift the lens to "look at" a world position
+	private Vector2 GetCameraPanOffsets(Vector3 targetWorldPos)
+	{
+		// Project the world point to the camera's local space
+		Vector3 localPos = Cam.GlobalTransform.AffineInverse() * targetWorldPos;
+		// The H/V offsets in Godot 3D effectively shift the projection matrix
+		// This is a rough approximation that feels good for tactical heights
+		return new Vector2(localPos.X * 0.2f, -localPos.Y * 0.2f);
 	}
 	
 	private async void HandleUnitDeath(Unit deadUnit)
@@ -134,6 +205,24 @@ public partial class GameManager
 
 		Node collider = (Node)result["collider"];
 
+		// === CAMP CLICK LOGIC ===
+		if (_currentState == State.Camp)
+		{
+			if (collider.GetParent() is Unit campUnit) // Renamed to campUnit here!
+			{
+				string charName = campUnit.Data.Profile.Name;
+				var conv = GetAvailableCampConversation(charName);
+				if (conv != null)
+				{
+					// Reset the hover squish before triggering dialogue
+					campUnit.SetHovered(false); 
+					TriggerCampConversation(conv);
+				}
+			}
+			return; // Crucial: Stop processing clicks entirely if we are in Camp!
+		}
+
+		// === COMBAT CLICK LOGIC ===
 		if (collider.GetParent() is Unit clickedUnit)
 		{
 			if (clickedUnit.IsFriendly) SelectUnit(clickedUnit);
@@ -287,19 +376,38 @@ public partial class GameManager
 			
 			if (_hoveredUnit != null)
 			{
-				bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null && !_selectedUnit.HasAttacked && 
-									(_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn) && 
-									GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
-				
-				_hoveredUnit.SetHovered(true, isTargetable);
-
-				if (isTargetable)
+				// === CAMP HOVER LOGIC ===
+				if (_currentState == State.Camp)
 				{
-					_previewedEnemy = _hoveredUnit;
-					_previewedEnemy.PreviewDamage(_selectedUnit.GetMinDamage());
+					string charName = _hoveredUnit.Data.Profile.Name;
+					var conv = GetAvailableCampConversation(charName);
 					
-					if (_currentState == State.PlayerTurn && AttackCursorIcon != null)
-						Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					// Only trigger the juicy hover bounce if they want to talk
+					if (conv != null)
+					{
+						_hoveredUnit.SetHovered(true);
+						// Optional: Change the cursor to indicate they can be clicked
+						if (AttackCursorIcon != null) 
+							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					}
+				}
+				// === COMBAT HOVER LOGIC ===
+				else 
+				{
+					bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null && !_selectedUnit.HasAttacked && 
+										(_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn) && 
+										GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+					
+					_hoveredUnit.SetHovered(true, isTargetable);
+
+					if (isTargetable)
+					{
+						_previewedEnemy = _hoveredUnit;
+						_previewedEnemy.PreviewDamage(_selectedUnit.GetMinDamage());
+						
+						if (_currentState == State.PlayerTurn && AttackCursorIcon != null)
+							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
+					}
 				}
 			}
 		}

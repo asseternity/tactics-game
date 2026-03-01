@@ -3,5 +3,47 @@
 	"res://story/mission_0.json",
 	"res://story/mission_1.json",
     "res://story/mission_2.json"
+  ],
+  "CampConversations": [
+	{
+	  "CharacterName": "Dougal",
+	  "TimelineName": "Camp_Dougal_PraisesMercy",
+	  "Priority": 10,
+	  "Condition": "Flag:SparedDockGuard",
+	  "PlayOnce": true,
+	  "Steps": [
+		{
+		  "Action": "Join",
+		  "Character": "Dougal",
+		  "Position": "Right",
+		  "Facing": "Left"
+		},
+		{
+		  "Speaker": "Dougal",
+		  "Text": "I still think you're a fool for letting that guard live. But... maybe this crew needed a fool with a conscience.",
+		  "Emotion": "confusion"
+		}
+	  ]
+	},
+	{
+	  "CharacterName": "Dougal",
+	  "TimelineName": "Camp_Dougal_PraisesRuthlessness",
+	  "Priority": 10,
+	  "Condition": "Flag:KilledDockGuard",
+	  "PlayOnce": true,
+	  "Steps": [
+		{
+		  "Action": "Join",
+		  "Character": "Dougal",
+		  "Position": "Right",
+		  "Facing": "Left"
+		},
+		{
+		  "Speaker": "Dougal",
+		  "Text": "No loose ends on the docks. You've got a cold streak, Ambrose. I respect that.",
+		  "Emotion": "bravery"
+		}
+	  ]
+	}
   ]
 }

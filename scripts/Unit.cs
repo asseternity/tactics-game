@@ -495,7 +495,9 @@ public partial class Unit : Node3D
 		particles.Emitting = true;
 
 		// Clean up the node after the animation finishes
-		GetTree().CreateTimer(0.6f).Timeout += () => particles.QueueFree();
+		GetTree().CreateTimer(0.6f).Timeout += () => { 
+			if (GodotObject.IsInstanceValid(particles)) particles.QueueFree(); 
+		};
 	}
 
 	private void SpawnDeathParticles()
@@ -534,7 +536,9 @@ public partial class Unit : Node3D
 		particles.GlobalPosition = this.GlobalPosition + new Vector3(0, 1f, 0);
 		
 		particles.Emitting = true;
-		GetTree().CreateTimer(1.2f).Timeout += () => particles.QueueFree();
+		GetTree().CreateTimer(1.2f).Timeout += () => { 
+			if (GodotObject.IsInstanceValid(particles)) particles.QueueFree(); 
+		};
 	}
 
 	public void SetSelected(bool selected) { IsSelected = selected; UpdateVisuals(); }
