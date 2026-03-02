@@ -49,8 +49,8 @@ public class DialogueChoice
 
 public class DialogueStep 
 {
-	public string Action { get; set; } // Can now be "If", "ElseIf", "Else", or "SetFlag"
-	public string Condition { get; set; } // NEW: e.g., "Flag:TookTheGold" or "Rel:Ambrose:Trust > 50"
+	public string Action { get; set; }
+	public string Condition { get; set; }
 	public string Character { get; set; }
 	public string Position { get; set; }
 	public string Facing { get; set; }
@@ -59,7 +59,7 @@ public class DialogueStep
 	public string Emotion { get; set; }
 	public string Value { get; set; } 
 	public System.Collections.Generic.List<DialogueChoice> Choices { get; set; }
-	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } // NEW: Holds the steps inside an If/Else block
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
 }
 
 public class CampConversation
@@ -68,10 +68,6 @@ public class CampConversation
 	public string TimelineName { get; set; }
 	public int Priority { get; set; }
 	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
-	
-	// e.g. "Rel:Ambrose:Respect > 50" or "Flag:SavedTheVillage"
 	public string Condition { get; set; } 
-	
-	// If true, we automatically set a flag when played so it doesn't repeat forever
 	public bool PlayOnce { get; set; } = true; 
 }

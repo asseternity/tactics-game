@@ -56,11 +56,9 @@ public partial class GameManager : Node3D
 	private TextureRect _activeDialogueBackground;
 
 	// === GAME DATA ===
-	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	public List<CampConversation> CampConversationsPool = new();
 	private List<PersistentUnit> _party = new(); 
 	public List<GameItem> Inventory = new();
-	public System.Collections.Generic.Dictionary<string, Equipment> ItemDatabase = new();
 	private PersistentUnit _viewedPartyMember;
 	private VBoxContainer _rightMenuPanel; 
 
@@ -80,15 +78,7 @@ public partial class GameManager : Node3D
 		if (Cam != null) _initialCamPos = Cam.GlobalPosition;
 
 		CallDeferred(MethodName.SetupUnifiedUI);
-
-		_unitDatabase["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
-		_unitDatabase["Dougal"] = new UnitProfile("Dougal", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
-		_unitDatabase["Guard"] = new UnitProfile("Goblin", "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right);
-		_unitDatabase["Orc"]   = new UnitProfile("Ogre", "res://assets/HR_ORC2.png", 25, 8, 1, 2, 120, UnitFacing.Center);
-
-		ItemDatabase["IronSword"] = new Equipment("IronSword", "Iron Sword", "res://icons/sword.png", EquipSlot.Weapon, bonusDmg: 1);
-		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
-
+		GameDatabase.Initialize();
 		GenerateGrid();
 		AttackButton.Pressed += OnAttackButtonPressed;
 		EndTurnButton.Pressed += OnEndTurnPressed; 
@@ -246,7 +236,7 @@ public partial class GameManager : Node3D
 
 		if (currentEvent.Type == EventType.AddPartyMember)
 		{
-			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], currentEvent.IsPlayer));
+			_party.Add(new PersistentUnit(GameDatabase.Units[currentEvent.ProfileId], currentEvent.IsPlayer));
 			AdvanceScript();
 		}
 		else if (currentEvent.Type == EventType.JumpToSection)
@@ -337,9 +327,30 @@ public partial class GameManager : Node3D
 		return 0; // Return 0 if they haven't joined or the stat doesn't exist
 	}
 
+	private void UpdateRelationship(string charName, string relType, int amount)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		if (companion != null && companion.Relationships.ContainsKey(relType))
+		{
+			// === THE JUICE FIX 2: Capture old value and pass to UI! ===
+			int oldVal = companion.Relationships[relType];
+			int newVal = Mathf.Clamp(oldVal + amount, 0, 100);
+			companion.Relationships[relType] = newVal;
+			
+			ShowRelationshipNotification(charName, relType, amount, oldVal, newVal);
+		}
+	}
+	
 	private void OnDialogicSignal(string argument)
 	{
 		if (string.IsNullOrEmpty(argument)) return;
+		
+		// === THE JUICE FIX 3: Catch the ChoicePicked signal! ===
+		if (argument == "ChoicePicked")
+		{
+			ShowChoicePickedJuice();
+			return;
+		}
 		
 		if (argument.StartsWith("JumpTo:")) 
 		{
@@ -371,7 +382,6 @@ public partial class GameManager : Node3D
 				ShowEmotionEffect(parts[1], parts[2], burstPos);
 			}
 		}
-		// === NEW: Catch the flag and save it to memory! ===
 		else if (argument.StartsWith("SetFlag:"))
 		{
 			string flagName = argument.Split(':')[1];
@@ -466,16 +476,6 @@ public partial class GameManager : Node3D
 			DeselectUnit();
 			_ = ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
 			ShowActions(true);
-		}
-	}
-
-	private void UpdateRelationship(string charName, string relType, int amount)
-	{
-		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
-		if (companion != null && companion.Relationships.ContainsKey(relType))
-		{
-			companion.Relationships[relType] = Mathf.Clamp(companion.Relationships[relType] + amount, 0, 100);
-			ShowRelationshipNotification(charName, relType, amount);
 		}
 	}
 	

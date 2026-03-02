@@ -23,6 +23,7 @@ else:
 Ambrose: Alright, the entrance to the artifact vault is just ahead. It's guarded by the Magister's elite.
 
 - I'll use my Venatori disguise to bribe our way past.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:BribedVaultGuards"]
 	update Ambrose [animation="Bounce" length="0.4" wait="true"]
 	[signal arg="Emotion:Ambrose:bravery"]
@@ -30,6 +31,7 @@ Ambrose: Alright, the entrance to the artifact vault is just ahead. It's guarded
 	[signal arg="SetSectionQuietly:VaultEntry_Sneak"]
 	jump Mission1_Sneak/
 - Dougal, kick the doors in. We take them by surprise.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:AssaultedVault"]
 	[signal arg="Rel:Dougal:Agreement:20"]
 	update Dougal [animation="Bounce" length="0.4" wait="true"]

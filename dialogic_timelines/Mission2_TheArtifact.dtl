@@ -10,6 +10,7 @@ update Dougal [animation="Bounce" length="0.4" wait="true"]
 Dougal: That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori rituals. Our employer wants it, but I say we smash it right here.
 
 - We are professionals, Dougal. We take the idol and collect our pay.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:TriedToStealIdol"]
 	if StoryBridge.GetRelationship("Dougal", "Agreement") < 50:
 		update Dougal [animation="Bounce" length="0.4" wait="true"]
@@ -26,6 +27,7 @@ Dougal: That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori ri
 		Dougal: Fine. But you're carrying it. If my skin starts boiling, I'm dropping it in the harbor.
 		[signal arg="SetFlag:IdolSecured"]
 - You're right. No amount of gold is worth unleashing this into the world. Smash it.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:IdolDestroyed"]
 	[signal arg="Rel:Dougal:Respect:30"]
 	[signal arg="Rel:Dougal:Agreement:30"]

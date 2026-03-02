@@ -15,6 +15,7 @@ update Guard [animation="Bounce" length="0.4" wait="true"]
 Guard: Maker's breath... please! I yield! The Magister didn't pay us enough to die to a pair of alley rats!
 
 - We don't leave loose ends. Finish him, Dougal.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:KilledDockGuard"]
 	[signal arg="Rel:Dougal:Agreement:20"]
 	update Dougal [animation="Bounce" length="0.4" wait="true"]
@@ -23,6 +24,7 @@ Guard: Maker's breath... please! I yield! The Magister didn't pay us enough to d
 	leave Guard
 
 - Run along, friend. And reconsider your choice of employer.
+	[signal arg="ChoicePicked"]
 	[signal arg="SetFlag:SparedDockGuard"]
 	[signal arg="Rel:Dougal:Agreement:-20"]
 	update Guard [animation="Bounce" length="0.4" wait="true"]

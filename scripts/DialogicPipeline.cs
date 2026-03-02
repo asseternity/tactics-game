@@ -221,7 +221,6 @@ custom_info = {{}}
 
 		foreach (var step in steps)
 		{
-			// === THE FIX: Restored Signal, Join, and Leave Logic ===
 			if (step.Action == "Signal" && !string.IsNullOrEmpty(step.Value))
 			{
 				if (step.Value.StartsWith("JumpTo:"))
@@ -267,7 +266,6 @@ custom_info = {{}}
 				{
 					currentActiveChars[step.Character] = step.Position;
 					
-					// THE FIX: Translate our JSON words into Dialogic's default numbered anchors!
 					string posId = step.Position;
 					
 					if (string.Equals(posId, "FarLeft", System.StringComparison.OrdinalIgnoreCase)) posId = "0";
@@ -278,7 +276,6 @@ custom_info = {{}}
 
 					bool mirror = ShouldMirrorPortrait(step.Character, step.Facing, data);
 					
-					// Restored to your EXACT original syntax
 					string joinLine = $"join {step.Character} {posId}";
 					if (mirror) joinLine += " [mirrored=\"true\"]";
 					
@@ -295,7 +292,6 @@ custom_info = {{}}
 				continue;
 			}
 
-			// === If / ElseIf / Else Logic ===
 			if (step.Action == "If")
 			{
 				dtl.AppendLine($"{indent}if {TranslateCondition(step.Condition)}:");
@@ -322,7 +318,9 @@ custom_info = {{}}
 				{
 					dtl.AppendLine($"{indent}- {choice.Text}");
 					
-					// If the choice sets a flag, inject the signal immediately!
+					// === THE JUICE FIX 1: Inject the choice picked signal immediately! ===
+					dtl.AppendLine($"{indent}\t[signal arg=\"ChoicePicked\"]");
+					
 					if (!string.IsNullOrEmpty(choice.SetFlag))
 					{
 						dtl.AppendLine($"{indent}\t[signal arg=\"SetFlag:{choice.SetFlag}\"]");

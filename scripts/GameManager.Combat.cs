@@ -34,7 +34,7 @@ public partial class GameManager
 			Vector3 finalPos = e.Position;
 			if (_grid.TryGetValue(GetGridPos(finalPos), out Tile tile))
 				finalPos = new Vector3(tile.Position.X, tile.Position.Y, tile.Position.Z);
-			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, finalPos);
+			SpawnUnit(new PersistentUnit(GameDatabase.Units[e.ProfileId]), false, finalPos);
 		}
 		
 		SpawnRandomObstacles(new System.Random().Next(8, 16));
