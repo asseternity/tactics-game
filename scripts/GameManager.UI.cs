@@ -725,4 +725,45 @@ public partial class GameManager
 			};
 		};
 	}
+	
+	private void ShowCardRankUpNotification(PersistentUnit unit, CardRank newRank)
+	{
+		string suitSymbol = unit.CardSuit switch
+		{
+			CardSuit.Hearts   => "♥",
+			CardSuit.Diamonds => "♦",
+			CardSuit.Clubs    => "♣",
+			CardSuit.Spades   => "♠",
+			_                 => "?"
+		};
+		Color suitColor = (unit.CardSuit == CardSuit.Hearts || unit.CardSuit == CardSuit.Diamonds)
+			? new Color(0.9f, 0.2f, 0.2f) : new Color(0.8f, 0.8f, 0.8f);
+
+		Label label = new Label
+		{
+			Text = $"BOND RANK UP!\n{unit.Profile.Name}: {suitSymbol} {newRank.DisplayName()}",
+			HorizontalAlignment = HorizontalAlignment.Center
+		};
+		label.AddThemeFontSizeOverride("font_size", 48);
+		label.AddThemeColorOverride("font_color", suitColor);
+		label.AddThemeColorOverride("font_outline_color", Colors.Black);
+		label.AddThemeConstantOverride("outline_size", 14);
+		if (_fantasyFont != null) label.AddThemeFontOverride("font", _fantasyFont);
+		label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(label);
+		else AddChild(label);
+
+		label.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
+		label.Scale = Vector2.Zero;
+		label.Modulate = new Color(1, 1, 1, 0);
+
+		Tween t = CreateTween();
+		t.Parallel().TweenProperty(label, "scale", Vector2.One, 0.4f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.Parallel().TweenProperty(label, "modulate:a", 1.0f, 0.3f);
+		t.Chain().TweenInterval(1.5f);
+		t.Chain().TweenProperty(label, "modulate:a", 0.0f, 0.4f);
+		t.Finished += () => label.QueueFree();
+	}
 }

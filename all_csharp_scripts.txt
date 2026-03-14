@@ -1,5 +1,5 @@
 === ALL C# SCRIPTS COMBINED ===
-Generated on: 2026-03-02 09:49:01
+Generated on: 2026-03-14 17:47:32
 Source folder: res://scripts/
 ==========================================================================================
 
@@ -48,6 +48,757 @@ internal static class AssemblyUnloadFix
 			// Best-effort; avoid throwing during unload
 		}
 	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: CardSystem.cs]
+
+// CardSystem.cs
+// Core poker hand evaluation, flanking detection, and combo resolution.
+using Godot;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+public enum CardSuit { Hearts, Diamonds, Clubs, Spades }
+
+/// <summary>
+/// Card rank encoding. None = no relationship yet.
+/// Tier prefix: 0=Base, 1=Bronze, 2=Silver, 3=Gold, 4=Platinum
+/// </summary>
+public enum CardRank
+{
+	None = 0,
+	// Base tier
+	Two = 2, Three = 3, Four = 4, Five = 5,
+	Jack = 11, Queen = 12, King = 13, Ace = 14,
+	// Bronze tier (same face values, higher tier prefix)
+	BronzeTwo = 102, BronzeThree = 103, BronzeFour = 104, BronzeFive = 105,
+	BronzeJack = 111, BronzeQueen = 112, BronzeKing = 113, BronzeAce = 114,
+	// Silver tier
+	SilverTwo = 202, SilverThree = 203, SilverFour = 204, SilverFive = 205,
+	SilverJack = 211, SilverQueen = 212, SilverKing = 213, SilverAce = 214,
+	// Gold tier
+	GoldTwo = 302, GoldThree = 303, GoldFour = 304, GoldFive = 305,
+	GoldJack = 311, GoldQueen = 312, GoldKing = 313, GoldAce = 314,
+}
+
+/// <summary>Extracts the base face value (2-14) from a CardRank for hand comparison.</summary>
+public static class CardRankExtensions
+{
+	public static int FaceValue(this CardRank rank) => (int)rank % 100;
+	public static int Tier(this CardRank rank) => (int)rank / 100;
+
+	public static string DisplayName(this CardRank rank)
+	{
+		int face = rank.FaceValue();
+		int tier = rank.Tier();
+		string prefix = tier switch { 1 => "Bronze ", 2 => "Silver ", 3 => "Gold ", 4 => "Platinum ", _ => "" };
+		string faceName = face switch
+		{
+			11 => "Jack", 12 => "Queen", 13 => "King", 14 => "Ace",
+			_ => face.ToString()
+		};
+		return prefix + faceName;
+	}
+
+	/// <summary>Advance one step up the rank ladder.</summary>
+	public static CardRank NextRank(this CardRank current)
+	{
+		int[] faceOrder = { 2, 3, 4, 5, 11, 12, 13, 14 };
+		int tier = current.Tier();
+		int face = current.FaceValue();
+		int idx = Array.IndexOf(faceOrder, face);
+
+		if (idx < 0) return CardRank.Two; // None → Two
+
+		if (idx + 1 < faceOrder.Length)
+		{
+			// Same tier, next face
+			return (CardRank)(tier * 100 + faceOrder[idx + 1]);
+		}
+		else
+		{
+			// Wrap to next tier at Two
+			return (CardRank)((tier + 1) * 100 + 2);
+		}
+	}
+}
+
+// ============================================================
+// HAND TYPES
+// ============================================================
+
+public enum PokerHand
+{
+	HighCard = 0,
+	OnePair = 1,
+	TwoPair = 2,
+	ThreeOfAKind = 3,
+	Straight = 4,
+	Flush = 5,
+	FullHouse = 6,
+	FourOfAKind = 7,
+	StraightFlush = 8,
+	RoyalFlush = 9
+}
+
+public class HandResult
+{
+	public PokerHand Hand;
+	public float DamageMultiplier;   // Applied to EACH unit in the combo
+	public Color ComboColor;
+	public string DisplayName;
+	public List<CardEntry> ContributingCards; // The actual 5 cards used
+	public List<Unit> ContributingUnits;      // Which units are in the combo
+
+	public static HandResult None() => new HandResult
+	{
+		Hand = PokerHand.HighCard,
+		DamageMultiplier = 1.0f,
+		ComboColor = new Color(0.7f, 0.7f, 0.7f),
+		DisplayName = "No Combo",
+		ContributingCards = new List<CardEntry>(),
+		ContributingUnits = new List<Unit>()
+	};
+}
+
+public class CardEntry
+{
+	public Unit Owner;
+	public CardRank Rank;
+	public CardSuit Suit;
+	public int FaceValue => Rank.FaceValue();
+}
+
+// ============================================================
+// JOKER EFFECT FLAGS (on Equipment)
+// ============================================================
+
+[Flags]
+public enum JokerEffect
+{
+	None             = 0,
+	PairsCountDouble = 1 << 0,   // Pair damage bonus is doubled
+	StraightAt3      = 1 << 1,   // Straights valid with only 3 cards
+	FlushAt3         = 1 << 2,   // Flushes valid with only 3 of same suit
+	FaceCardsBonus   = 1 << 3,   // J/Q/K/A count as +1 face value in straights
+	TierMultiplier   = 1 << 4,   // Each tier above 0 adds +10% damage
+	AcesWild         = 1 << 5,   // Aces count as any suit
+}
+
+// ============================================================
+// HAND EVALUATOR
+// ============================================================
+
+public static class PokerHandEvaluator
+{
+	// --- Multipliers per hand type (base, before joker modifications) ---
+	private static readonly Dictionary<PokerHand, float> BaseMultipliers = new()
+	{
+		{ PokerHand.HighCard,      1.00f },
+		{ PokerHand.OnePair,       1.25f },
+		{ PokerHand.TwoPair,       1.50f },
+		{ PokerHand.ThreeOfAKind,  1.75f },
+		{ PokerHand.Straight,      2.00f },
+		{ PokerHand.Flush,         2.25f },
+		{ PokerHand.FullHouse,     2.50f },
+		{ PokerHand.FourOfAKind,   3.00f },
+		{ PokerHand.StraightFlush, 3.50f },
+		{ PokerHand.RoyalFlush,    4.00f },
+	};
+
+	private static readonly Dictionary<PokerHand, Color> HandColors = new()
+	{
+		{ PokerHand.HighCard,      new Color(0.6f, 0.6f, 0.6f) },
+		{ PokerHand.OnePair,       new Color(0.4f, 0.8f, 0.4f) },
+		{ PokerHand.TwoPair,       new Color(0.3f, 0.9f, 0.7f) },
+		{ PokerHand.ThreeOfAKind,  new Color(0.3f, 0.6f, 1.0f) },
+		{ PokerHand.Straight,      new Color(0.8f, 0.5f, 1.0f) },
+		{ PokerHand.Flush,         new Color(1.0f, 0.5f, 0.2f) },
+		{ PokerHand.FullHouse,     new Color(1.0f, 0.7f, 0.1f) },
+		{ PokerHand.FourOfAKind,   new Color(1.0f, 0.3f, 0.3f) },
+		{ PokerHand.StraightFlush, new Color(1.0f, 0.1f, 0.8f) },
+		{ PokerHand.RoyalFlush,    new Color(1.0f, 0.9f, 0.0f) },
+	};
+
+	private static readonly Dictionary<PokerHand, string> HandNames = new()
+	{
+		{ PokerHand.HighCard,      "High Card" },
+		{ PokerHand.OnePair,       "One Pair!" },
+		{ PokerHand.TwoPair,       "Two Pair!" },
+		{ PokerHand.ThreeOfAKind,  "Three of a Kind!" },
+		{ PokerHand.Straight,      "Straight!!" },
+		{ PokerHand.Flush,         "Flush!!" },
+		{ PokerHand.FullHouse,     "Full House!!" },
+		{ PokerHand.FourOfAKind,   "Four of a Kind!!!" },
+		{ PokerHand.StraightFlush, "Straight Flush!!!!" },
+		{ PokerHand.RoyalFlush,    "ROYAL FLUSH!!!!!" },
+	};
+
+	/// <summary>
+	/// Given a list of CardEntries (1-N units), find the best 5-card hand 
+	/// and return a HandResult with multiplier, color, and contributing units.
+	/// Joker effects come from all active party equipment.
+	/// </summary>
+	public static HandResult Evaluate(List<CardEntry> cards, JokerEffect jokers = JokerEffect.None)
+	{
+		if (cards == null || cards.Count == 0) return HandResult.None();
+
+		// Cap at 5 cards, pick best combo
+		List<CardEntry> best = FindBestHand(cards, jokers);
+		PokerHand hand = ClassifyHand(best, jokers);
+
+		float multiplier = BaseMultipliers[hand];
+
+		// --- Joker: TierMultiplier ---
+		if (jokers.HasFlag(JokerEffect.TierMultiplier))
+		{
+			float tierBonus = best.Sum(c => c.Rank.Tier()) * 0.10f;
+			multiplier += tierBonus;
+		}
+
+		// --- Joker: PairsCountDouble ---
+		if (jokers.HasFlag(JokerEffect.PairsCountDouble) && (hand == PokerHand.OnePair || hand == PokerHand.TwoPair))
+		{
+			multiplier = 1.0f + (multiplier - 1.0f) * 2f;
+		}
+
+		return new HandResult
+		{
+			Hand = hand,
+			DamageMultiplier = multiplier,
+			ComboColor = HandColors[hand],
+			DisplayName = HandNames[hand],
+			ContributingCards = best,
+			ContributingUnits = best.Select(c => c.Owner).Distinct().ToList()
+		};
+	}
+
+	// --------------------------------------------------------
+	// PRIVATE HELPERS
+	// --------------------------------------------------------
+
+	private static List<CardEntry> FindBestHand(List<CardEntry> cards, JokerEffect jokers)
+	{
+		if (cards.Count <= 5) return new List<CardEntry>(cards);
+
+		// Try all C(n,5) combinations and pick the highest scoring hand
+		List<CardEntry> best = null;
+		PokerHand bestRank = PokerHand.HighCard;
+
+		foreach (var combo in Combinations(cards, 5))
+		{
+			PokerHand rank = ClassifyHand(combo, jokers);
+			if (best == null || rank > bestRank)
+			{
+				best = combo;
+				bestRank = rank;
+			}
+		}
+		return best ?? cards.Take(5).ToList();
+	}
+
+	private static PokerHand ClassifyHand(List<CardEntry> cards, JokerEffect jokers)
+	{
+		bool acesWild = jokers.HasFlag(JokerEffect.AcesWild);
+
+		var suits = cards.Select(c =>
+			(acesWild && c.FaceValue == 14) ? (CardSuit?)null : (CardSuit?)c.Suit
+		).ToList();
+
+		var values = cards.Select(c => c.FaceValue).OrderBy(v => v).ToList();
+		var groups = values.GroupBy(v => v).OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).ToList();
+
+		int minFlushCards = jokers.HasFlag(JokerEffect.FlushAt3) ? 3 : 5;
+		int minStraightCards = jokers.HasFlag(JokerEffect.StraightAt3) ? 3 : 5;
+
+		// Check flush (all same suit, ignoring aces-wild wildcards)
+		bool isFlush = cards.Count >= minFlushCards &&
+			suits.Where(s => s.HasValue).GroupBy(s => s.Value).Any(g => g.Count() >= minFlushCards);
+
+		// Check straight
+		bool isStraight = IsStraight(values, minStraightCards, jokers.HasFlag(JokerEffect.FaceCardsBonus));
+
+		if (isFlush && isStraight)
+		{
+			bool isRoyal = values.Contains(14) && values.Contains(13) && values.Contains(12)
+						   && values.Contains(11) && values.Contains(10);
+			return isRoyal ? PokerHand.RoyalFlush : PokerHand.StraightFlush;
+		}
+
+		int topGroupCount = groups[0].Count();
+		int secondGroupCount = groups.Count > 1 ? groups[1].Count() : 0;
+
+		if (topGroupCount == 4) return PokerHand.FourOfAKind;
+		if (topGroupCount == 3 && secondGroupCount == 2) return PokerHand.FullHouse;
+		if (isFlush) return PokerHand.Flush;
+		if (isStraight) return PokerHand.Straight;
+		if (topGroupCount == 3) return PokerHand.ThreeOfAKind;
+		if (topGroupCount == 2 && secondGroupCount == 2) return PokerHand.TwoPair;
+		if (topGroupCount == 2) return PokerHand.OnePair;
+		return PokerHand.HighCard;
+	}
+
+	private static bool IsStraight(List<int> sortedValues, int minCards, bool faceBonus)
+	{
+		if (sortedValues.Count < minCards) return false;
+		var distinct = sortedValues.Distinct().OrderBy(v => v).ToList();
+		if (distinct.Count < minCards) return false;
+
+		int streak = 1, maxStreak = 1;
+		for (int i = 1; i < distinct.Count; i++)
+		{
+			int diff = distinct[i] - distinct[i - 1];
+			// FaceBonus: J(11) Q(12) K(13) A(14) are consecutive with no bonus needed,
+			// but also allow 10→J gap to count as 1 when FaceBonus is on
+			if (diff == 1 || (faceBonus && diff == 1)) streak++;
+			else streak = 1;
+			maxStreak = Math.Max(maxStreak, streak);
+		}
+		return maxStreak >= minCards;
+	}
+
+	private static IEnumerable<List<T>> Combinations<T>(List<T> list, int k)
+	{
+		if (k == 0) { yield return new List<T>(); yield break; }
+		for (int i = 0; i < list.Count; i++)
+			foreach (var rest in Combinations(list.Skip(i + 1).ToList(), k - 1))
+			{
+				var combo = new List<T> { list[i] };
+				combo.AddRange(rest);
+				yield return combo;
+			}
+	}
+}
+
+// ============================================================
+// FLANKING DETECTOR
+// ============================================================
+
+public static class FlankingDetector
+{
+	private const float TileSize = 2f; // Must match GameManager.TileSize
+
+	/// <summary>
+	/// Returns all (ally, flankedEnemy) pairs where the ally flanks the given enemy
+	/// from the attacker's perspective. Flanking = attacker and ally are on OPPOSITE
+	/// sides of the enemy within AttackRange of both.
+	/// </summary>
+	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(
+		Unit attacker,
+		Unit targetEnemy,
+		List<Unit> allUnits)
+	{
+		var result = new List<(Unit, Unit)>();
+
+		// All living enemies on the board
+		var enemies = allUnits.Where(u => !u.IsFriendly && u != targetEnemy && IsInstanceValid(u)).ToList();
+		// All other friendly units
+		var allies = allUnits.Where(u => u.IsFriendly && u != attacker && IsInstanceValid(u)).ToList();
+
+		// We check flanking for the target enemy AND nearby enemies (chain)
+		var enemiesToCheck = new List<Unit> { targetEnemy };
+		enemiesToCheck.AddRange(enemies.Where(e =>
+			GridDist(e.GlobalPosition, targetEnemy.GlobalPosition) <= 2));
+
+		foreach (var enemy in enemiesToCheck)
+		{
+			foreach (var ally in allies)
+			{
+				if (IsFlanking(attacker, ally, enemy))
+					result.Add((ally, enemy));
+			}
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// An ally flanks an enemy if:
+	///  - The enemy lies roughly between the attacker and the ally
+	///  - Both the attacker and ally are within attack range of the enemy
+	/// </summary>
+	private static bool IsFlanking(Unit attacker, Unit ally, Unit enemy)
+	{
+		Vector3 aPos = attacker.GlobalPosition;
+		Vector3 allyPos = ally.GlobalPosition;
+		Vector3 ePos = enemy.GlobalPosition;
+
+		// Direction from attacker to enemy
+		Vector3 toEnemy = (ePos - aPos);
+		// Direction from ally to enemy
+		Vector3 allyToEnemy = (ePos - allyPos);
+
+		// They flank if the dot product of their "to-enemy" vectors is negative
+		// (pointing toward each other through the enemy)
+		float dot = toEnemy.Normalized().Dot(allyToEnemy.Normalized());
+		if (dot > -0.3f) return false; // Not on opposite sides
+
+		// Both must be able to reach the enemy
+		bool attackerInRange = GridDist(aPos, ePos) <= attacker.Data.AttackRange;
+		bool allyInRange = GridDist(allyPos, ePos) <= ally.Data.AttackRange;
+
+		return attackerInRange && allyInRange;
+	}
+
+	public static int GridDist(Vector3 a, Vector3 b)
+	{
+		int ax = Mathf.RoundToInt(a.X / TileSize), az = Mathf.RoundToInt(a.Z / TileSize);
+		int bx = Mathf.RoundToInt(b.X / TileSize), bz = Mathf.RoundToInt(b.Z / TileSize);
+		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
+	}
+
+	private static bool IsInstanceValid(Unit u) => GodotObject.IsInstanceValid(u);
+}
+
+// ============================================================
+// COMBO RESOLVER  (called before each attack)
+// ============================================================
+
+public class ComboResult
+{
+	public HandResult HandResult;
+	/// <summary>Map of enemy → list of (ally, multiplier) that will hit it this attack</summary>
+	public Dictionary<Unit, List<(Unit attacker, float multiplier)>> AttackMap = new();
+
+	public bool HasCombo => HandResult != null && HandResult.Hand > PokerHand.HighCard;
+}
+
+public static class ComboResolver
+{
+	/// <summary>
+	/// Given the attacking unit and all units on the board, resolve the full combo:
+	///  - find all flanking pairs
+	///  - build card list from attacker + allies
+	///  - evaluate hand
+	///  - build the AttackMap
+	/// Returns a ComboResult with everything needed for damage + visuals.
+	/// </summary>
+	public static ComboResult Resolve(
+		Unit attacker,
+		Unit primaryTarget,
+		List<Unit> allUnits,
+		List<GameItem> inventory)
+	{
+		// 1. Gather joker effects from equipped items
+		JokerEffect jokers = JokerEffect.None;
+		foreach (var item in inventory)
+		{
+			if (item is Equipment eq && eq.JokerEffects != JokerEffect.None)
+				jokers |= eq.JokerEffects;
+		}
+
+		// Also check attacker's own equipment
+		if (attacker.Data.EquippedWeapon != null) jokers |= attacker.Data.EquippedWeapon.JokerEffects;
+		if (attacker.Data.EquippedArmor != null) jokers |= attacker.Data.EquippedArmor.JokerEffects;
+
+		// 2. Get flanking pairs
+		var flankingPairs = FlankingDetector.GetFlankingPairs(attacker, primaryTarget, allUnits);
+
+		// 3. Build card pool: attacker + unique flanking allies (cap 5 total)
+		var cardPool = new List<CardEntry>();
+		var unitsInCombo = new HashSet<Unit> { attacker };
+
+		// Attacker's card
+		if (attacker.Data.CardRank != CardRank.None)
+			cardPool.Add(new CardEntry { Owner = attacker, Rank = attacker.Data.CardRank, Suit = attacker.Data.CardSuit });
+
+		foreach (var (ally, _) in flankingPairs)
+		{
+			if (unitsInCombo.Contains(ally)) continue;
+			if (cardPool.Count >= 5) break;
+			unitsInCombo.Add(ally);
+			if (ally.Data.CardRank != CardRank.None)
+				cardPool.Add(new CardEntry { Owner = ally, Rank = ally.Data.CardRank, Suit = ally.Data.CardSuit });
+		}
+
+		// 4. Evaluate hand
+		HandResult handResult = cardPool.Count > 0
+			? PokerHandEvaluator.Evaluate(cardPool, jokers)
+			: HandResult.None();
+
+		// 5. Build attack map
+		var comboResult = new ComboResult { HandResult = handResult };
+
+		// Attacker always hits primary target
+		comboResult.AttackMap[primaryTarget] = new List<(Unit, float)>
+		{
+			(attacker, handResult.DamageMultiplier)
+		};
+
+		// Each flanking ally hits their flanked enemy
+		foreach (var (ally, flankedEnemy) in flankingPairs)
+		{
+			if (!handResult.ContributingUnits.Contains(ally)) continue;
+
+			if (!comboResult.AttackMap.ContainsKey(flankedEnemy))
+				comboResult.AttackMap[flankedEnemy] = new List<(Unit, float)>();
+
+			// Avoid duplicate entries
+			bool alreadyAdded = comboResult.AttackMap[flankedEnemy].Any(x => x.Item1 == ally);
+			if (!alreadyAdded)
+				comboResult.AttackMap[flankedEnemy].Add((ally, handResult.DamageMultiplier));
+		}
+
+		return comboResult;
+	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: ComboVisualizer.cs]
+
+// ComboVisualizer.cs
+// Draws colored lines between combo units and shows the hand type label floating over enemies.
+// Add as a child of GameManager in the scene. Attach to the same Node3D root.
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+
+public partial class ComboVisualizer : Node3D
+{
+	// One arc per (attacker, enemy, ally) triple
+	private List<Node3D> _activeVisuals = new();
+	private Label3D _handLabel;
+	private CanvasLayer _cardPreviewLayer;
+	private List<Control> _cardWidgets = new();
+
+	public override void _Ready()
+	{
+		_handLabel = new Label3D
+		{
+			FontSize = 80,
+			OutlineSize = 12,
+			OutlineModulate = Colors.Black,
+			Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+			NoDepthTest = true,
+			RenderPriority = 50,
+			Visible = false
+		};
+		AddChild(_handLabel);
+
+		_cardPreviewLayer = new CanvasLayer { Layer = 90 };
+		AddChild(_cardPreviewLayer);
+	}
+
+	/// <summary>
+	/// Called from GameManager when the player hovers over an enemy they can attack.
+	/// Pass null to clear all visuals.
+	/// </summary>
+	public void ShowComboPreview(ComboResult combo, Camera3D cam)
+	{
+		ClearVisuals();
+		if (combo == null || !combo.HasCombo) return;
+
+		Color c = combo.HandResult.ComboColor;
+
+		// 1. Draw lines between each (attacker ↔ enemy ↔ ally) triple
+		foreach (var kvp in combo.AttackMap)
+		{
+			Unit enemy = kvp.Key;
+			foreach (var (attacker, _) in kvp.Value)
+			{
+				if (!GodotObject.IsInstanceValid(attacker) || !GodotObject.IsInstanceValid(enemy)) continue;
+				DrawArcLine(attacker.GlobalPosition + Vector3.Up * 1.2f, enemy.GlobalPosition + Vector3.Up * 1.2f, c);
+			}
+		}
+
+		// 2. Hand label floats above the primary (first) enemy
+		Unit primaryEnemy = combo.AttackMap.Keys.FirstOrDefault();
+		if (primaryEnemy != null && GodotObject.IsInstanceValid(primaryEnemy))
+		{
+			_handLabel.Text = $"{combo.HandResult.DisplayName}\n×{combo.HandResult.DamageMultiplier:F2} DMG";
+			_handLabel.Modulate = c;
+			_handLabel.GlobalPosition = primaryEnemy.GlobalPosition + Vector3.Up * 3.5f;
+			_handLabel.Visible = true;
+
+			// Bounce the label in
+			_handLabel.Scale = Vector3.Zero;
+			CreateTween().TweenProperty(_handLabel, "scale", Vector3.One, 0.25f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		}
+
+		// 3. Mini card widgets in screen-space
+		ShowCardWidgets(combo, cam);
+	}
+
+	public void ClearVisuals()
+	{
+		foreach (var n in _activeVisuals) if (GodotObject.IsInstanceValid(n)) n.QueueFree();
+		_activeVisuals.Clear();
+		_handLabel.Visible = false;
+
+		foreach (var w in _cardWidgets) if (GodotObject.IsInstanceValid(w)) w.QueueFree();
+		_cardWidgets.Clear();
+	}
+
+	// --------------------------------------------------------
+	// PRIVATE HELPERS
+	// --------------------------------------------------------
+
+	private void DrawArcLine(Vector3 from, Vector3 to, Color color)
+	{
+		// Use a series of MeshInstance3D "beads" along the line for a dotted glowing arc
+		Vector3 dir = to - from;
+		float dist = dir.Length();
+		int beadCount = Mathf.Max(4, (int)(dist * 2));
+
+		Node3D lineParent = new Node3D();
+		AddChild(lineParent);
+		_activeVisuals.Add(lineParent);
+
+		for (int i = 0; i <= beadCount; i++)
+		{
+			float t = i / (float)beadCount;
+			// Slight arc peak
+			float arcHeight = Mathf.Sin(t * Mathf.Pi) * 0.4f;
+			Vector3 pos = from.Lerp(to, t) + Vector3.Up * arcHeight;
+
+			MeshInstance3D bead = new MeshInstance3D
+			{
+				Mesh = new SphereMesh { Radius = 0.07f, Height = 0.14f },
+				GlobalPosition = pos,
+				CastShadow = GeometryInstance3D.ShadowCastingSetting.Off
+			};
+
+			var mat = new StandardMaterial3D
+			{
+				AlbedoColor = color,
+				EmissionEnabled = true,
+				Emission = color,
+				EmissionEnergyMultiplier = 2.0f,
+				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+				Transparency = BaseMaterial3D.TransparencyEnum.Alpha
+			};
+			// Fade the ends
+			mat.AlbedoColor = new Color(color.R, color.G, color.B,
+				0.3f + 0.7f * Mathf.Sin(t * Mathf.Pi));
+			bead.MaterialOverride = mat;
+
+			lineParent.AddChild(bead);
+
+			// Stagger pop-in
+			bead.Scale = Vector3.Zero;
+			CreateTween().TweenProperty(bead, "scale", Vector3.One * 0.8f, 0.15f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out)
+				.SetDelay(t * 0.1f);
+		}
+
+		// Pulse animation on the whole line
+		Tween pulse = CreateTween().SetLoops();
+		pulse.TweenProperty(lineParent, "modulate:a", 0.4f, 0.6f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+		pulse.TweenProperty(lineParent, "modulate:a", 1.0f, 0.6f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+	}
+
+	private void ShowCardWidgets(ComboResult combo, Camera3D cam)
+	{
+		if (cam == null) return;
+
+		// Show small card faces at the bottom of the screen for each contributing unit
+		var cards = combo.HandResult.ContributingCards;
+		float cardW = 80f, cardH = 110f, spacing = 10f;
+		float totalW = cards.Count * (cardW + spacing) - spacing;
+		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
+		float startX = (screenSize.X - totalW) / 2f;
+		float startY = screenSize.Y - cardH - 20f;
+
+		for (int i = 0; i < cards.Count; i++)
+		{
+			var entry = cards[i];
+			float x = startX + i * (cardW + spacing);
+
+			PanelContainer card = new PanelContainer
+			{
+				Position = new Vector2(x, startY + 60f),
+				CustomMinimumSize = new Vector2(cardW, cardH)
+			};
+
+			// Card background style - suit color
+			Color suitColor = SuitColor(entry.Suit);
+			var style = new StyleBoxFlat
+			{
+				BgColor = new Color(0.95f, 0.95f, 0.95f),
+				CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
+				CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
+				BorderWidthBottom = 3, BorderWidthTop = 3, BorderWidthLeft = 3, BorderWidthRight = 3,
+				BorderColor = combo.HandResult.ComboColor,
+				ShadowSize = 6, ShadowColor = new Color(0, 0, 0, 0.5f)
+			};
+			card.AddThemeStyleboxOverride("panel", style);
+
+			VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+			vbox.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			card.AddChild(vbox);
+
+			// Suit symbol + rank
+			Label suitLabel = new Label
+			{
+				Text = SuitSymbol(entry.Suit),
+				HorizontalAlignment = HorizontalAlignment.Center
+			};
+			suitLabel.AddThemeFontSizeOverride("font_size", 26);
+			suitLabel.AddThemeColorOverride("font_color", suitColor);
+
+			Label rankLabel = new Label
+			{
+				Text = entry.Rank.DisplayName(),
+				HorizontalAlignment = HorizontalAlignment.Center
+			};
+			rankLabel.AddThemeFontSizeOverride("font_size", 14);
+			rankLabel.AddThemeColorOverride("font_color", new Color(0.1f, 0.1f, 0.1f));
+
+			Label ownerLabel = new Label
+			{
+				Text = entry.Owner?.Data?.Profile.Name ?? "?",
+				HorizontalAlignment = HorizontalAlignment.Center
+			};
+			ownerLabel.AddThemeFontSizeOverride("font_size", 11);
+			ownerLabel.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.5f));
+
+			vbox.AddChild(suitLabel);
+			vbox.AddChild(rankLabel);
+			vbox.AddChild(ownerLabel);
+
+			_cardPreviewLayer.AddChild(card);
+			_cardWidgets.Add(card);
+
+			// Slide up from bottom
+			Tween t = CreateTween();
+			t.TweenProperty(card, "position:y", startY, 0.3f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out)
+				.SetDelay(i * 0.05f);
+		}
+	}
+
+	private static Color SuitColor(CardSuit suit) => suit switch
+	{
+		CardSuit.Hearts   => new Color(0.9f, 0.1f, 0.1f),
+		CardSuit.Diamonds => new Color(0.9f, 0.1f, 0.1f),
+		CardSuit.Clubs    => new Color(0.1f, 0.1f, 0.1f),
+		CardSuit.Spades   => new Color(0.1f, 0.1f, 0.1f),
+		_                 => Colors.Gray
+	};
+
+	private static string SuitSymbol(CardSuit suit) => suit switch
+	{
+		CardSuit.Hearts   => "♥",
+		CardSuit.Diamonds => "♦",
+		CardSuit.Clubs    => "♣",
+		CardSuit.Spades   => "♠",
+		_                 => "?"
+	};
 }
 
 
@@ -623,16 +1374,24 @@ public struct UnitProfile
 	public string SpritePath;
 	public int MaxHP;
 	public int AttackDamage;
-	public int AttackRange; 
+	public int AttackRange;
 	public int Movement;
 	public int XPReward;
 	public UnitFacing DefaultFacing;
+	public int Speed;
+	public CardSuit CardSuit;
 
-	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward, UnitFacing defaultFacing = UnitFacing.Center)
+	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg,
+					   int attackRange, int movement, int xpReward,
+					   UnitFacing defaultFacing = UnitFacing.Center,
+					   int speed = 5,
+					   CardSuit cardSuit = CardSuit.Spades)
 	{
-		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
-		AttackDamage = attackDmg; AttackRange = attackRange; Movement = movement; XPReward = xpReward;
+		Name = name; SpritePath = spritePath; MaxHP = maxHp;
+		AttackDamage = attackDmg; AttackRange = attackRange;
+		Movement = movement; XPReward = xpReward;
 		DefaultFacing = defaultFacing;
+		Speed = speed; CardSuit = cardSuit;
 	}
 }
 
@@ -642,13 +1401,18 @@ public class PersistentUnit
 	public int Level = 1;
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
-	
+
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
 	public int AttackRange;
 	public int Movement;
-	public int XPReward; 
+	public int XPReward;
+
+	// === CARD SYSTEM ===
+	public CardRank CardRank = CardRank.None;
+	public CardSuit CardSuit => Profile.CardSuit;
+	public int Speed => Profile.Speed;
 
 	public bool IsPlayerCharacter = false;
 	public Dictionary<string, int> Relationships = new();
@@ -656,9 +1420,9 @@ public class PersistentUnit
 	public Equipment EquippedWeapon;
 	public Equipment EquippedArmor;
 
-	public int GetTotalMaxHP() => MaxHP + (EquippedWeapon?.BonusMaxHP ?? 0) + (EquippedArmor?.BonusMaxHP ?? 0);
-	public int GetTotalDamage() => AttackDamage + (EquippedWeapon?.BonusDamage ?? 0) + (EquippedArmor?.BonusDamage ?? 0);
-	public int GetTotalMovement() => Movement + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
+	public int GetTotalMaxHP()     => MaxHP     + (EquippedWeapon?.BonusMaxHP   ?? 0) + (EquippedArmor?.BonusMaxHP   ?? 0);
+	public int GetTotalDamage()    => AttackDamage + (EquippedWeapon?.BonusDamage  ?? 0) + (EquippedArmor?.BonusDamage  ?? 0);
+	public int GetTotalMovement()  => Movement  + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
 
 	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
@@ -682,8 +1446,18 @@ public class PersistentUnit
 	public void HealBetweenBattles()
 	{
 		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
-		if (CurrentHP <= 0) CurrentHP = 1; 
+		if (CurrentHP <= 0) CurrentHP = 1;
 		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
+	}
+
+	// === RELATIONSHIP → CARD RANK ===
+	/// <summary>
+	/// When a relationship action rewards a card rank-up, call this.
+	/// </summary>
+	public CardRank AdvanceCardRank()
+	{
+		CardRank = CardRank.NextRank();
+		return CardRank;
 	}
 }
 
@@ -753,20 +1527,154 @@ public class Equipment : GameItem
 	public int BonusMaxHP;
 	public int BonusDamage;
 	public int BonusMovement;
-	
-	public Equipment(string id, string name, string iconPath, EquipSlot slot, int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0)
+
+	// === JOKER SYSTEM ===
+	public JokerEffect JokerEffects = JokerEffect.None;
+
+	public Equipment(string id, string name, string iconPath, EquipSlot slot,
+					 int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0,
+					 JokerEffect jokerEffects = JokerEffect.None)
 	{
 		Id = id; Name = name; IconPath = iconPath; Slot = slot;
 		BonusMaxHP = bonusHp; BonusDamage = bonusDmg; BonusMovement = bonusMov;
-		
+		JokerEffects = jokerEffects;
+
 		List<string> stats = new();
-		if (BonusDamage > 0) stats.Add($"+{BonusDamage} DMG");
-		if (BonusMaxHP > 0) stats.Add($"+{BonusMaxHP} HP");
-		if (BonusMovement > 0) stats.Add($"+{BonusMovement} Move");
+		if (BonusDamage > 0)    stats.Add($"+{BonusDamage} DMG");
+		if (BonusMaxHP > 0)     stats.Add($"+{BonusMaxHP} HP");
+		if (BonusMovement > 0)  stats.Add($"+{BonusMovement} Move");
+		if (JokerEffects != JokerEffect.None) stats.Add($"Joker: {JokerEffects}");
 		Description = string.Join(" | ", stats);
 	}
 
 	public Equipment Clone() => (Equipment)this.MemberwiseClone();
+}
+
+
+==========================================================================================
+
+
+[FILENAME: GameDatabase.cs]
+
+using System.Collections.Generic;
+
+public static class GameDatabase
+{
+	public static Dictionary<string, UnitProfile> Units { get; private set; } = new();
+	public static Dictionary<string, Equipment> Items { get; private set; } = new();
+
+	public static void Initialize()
+	{
+		Units.Clear();
+		Items.Clear();
+
+		// === UNITS  (name, sprite, hp, dmg, range, move, xp, facing, speed, suit) ===
+		Units["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png",
+			25, 15, 1, 3, 0, UnitFacing.Right,  speed: 7,  cardSuit: CardSuit.Hearts);
+		Units["Dougal"]  = new UnitProfile("Dougal",  "res://assets/HighRes5.png",
+			18, 18, 1, 3, 0, UnitFacing.Right,  speed: 9,  cardSuit: CardSuit.Spades);
+		Units["Guard"]   = new UnitProfile("Goblin",  "res://assets/HighRes4.png",
+			10,  3, 1, 3, 140, UnitFacing.Right, speed: 4, cardSuit: CardSuit.Clubs);
+		Units["Orc"]     = new UnitProfile("Ogre",    "res://assets/HR_ORC2.png",
+			25,  8, 1, 2, 120, UnitFacing.Center, speed: 3, cardSuit: CardSuit.Diamonds);
+
+		// === ARMOR ===
+		Items["RustyMail"]          = new Equipment("RustyMail",          "Rusty Mail",          "res://icons/Rusty Mail.png",          EquipSlot.Armor,  bonusHp: 1);
+		Items["AgilityCloak"]       = new Equipment("AgilityCloak",       "Agility Cloak",       "res://icons/Agility Cloak.png",       EquipSlot.Armor,  bonusHp: 1, bonusMov: 1);
+		Items["FineAgilityCloak"]   = new Equipment("FineAgilityCloak",   "Fine Agility Cloak",  "res://icons/Fine Agility Cloak.png",  EquipSlot.Armor,  bonusHp: 2, bonusMov: 1);
+		Items["GrandAgilityCloak"]  = new Equipment("GrandAgilityCloak",  "Grand Agility Cloak", "res://icons/Grand Agility Cloak.png", EquipSlot.Armor,  bonusHp: 3, bonusMov: 2);
+		Items["HeavyLeatherArmor"]  = new Equipment("HeavyLeatherArmor",  "Heavy Leather Armor", "res://icons/Heavy Leather Armor.png", EquipSlot.Armor,  bonusHp: 4);
+		Items["GoldenShellmail"]    = new Equipment("GoldenShellmail",    "Golden Shellmail",    "res://icons/Golden Shellmail.png",    EquipSlot.Armor,  bonusHp: 6);
+		Items["BluePlatemail"]      = new Equipment("BluePlatemail",      "Blue Platemail",      "res://icons/Blue Platemail.png",      EquipSlot.Armor,  bonusHp: 8);
+		Items["FineHelmet"]         = new Equipment("FineHelmet",         "Fine Helmet",         "res://icons/helmet.png",              EquipSlot.Armor,  bonusHp: 3);
+		Items["SteelHelmet"]        = new Equipment("SteelHelmet",        "Steel Helmet",        "res://icons/Steel Helmet.png",        EquipSlot.Armor,  bonusHp: 4);
+		Items["SuperbHelmet"]       = new Equipment("SuperbHelmet",       "Superb Helmet",       "res://icons/Superb Helmet.png",       EquipSlot.Armor,  bonusHp: 5);
+
+		// === WEAPONS (TIER 1) ===
+		Items["IronSword"]    = new Equipment("IronSword",    "Iron Sword",    "res://icons/sword.png",       EquipSlot.Weapon, bonusDmg: 1);
+		Items["RustyKnife"]   = new Equipment("RustyKnife",   "Rusty Knife",   "res://icons/Rusty Knife.png", EquipSlot.Weapon, bonusDmg: 1);
+		Items["RustyHatchet"] = new Equipment("RustyHatchet", "Rusty Hatchet", "res://icons/Rusty Hatchet.png", EquipSlot.Weapon, bonusDmg: 1);
+		Items["QuickKnife"]   = new Equipment("QuickKnife",   "Quick Knife",   "res://icons/Quick Knife.png", EquipSlot.Weapon, bonusDmg: 1, bonusMov: 1);
+
+		// === WEAPONS (TIER 2) ===
+		Items["DuelingRapier"] = new Equipment("DuelingRapier", "Dueling Rapier", "res://icons/Dueling Rapier.png", EquipSlot.Weapon, bonusDmg: 2, bonusMov: 1);
+		Items["Emberknife"]    = new Equipment("Emberknife",    "Emberknife",     "res://icons/Emberknife.png",     EquipSlot.Weapon, bonusDmg: 2);
+		Items["Hooksword"]     = new Equipment("Hooksword",     "Hooksword",      "res://icons/Hooksword.png",      EquipSlot.Weapon, bonusDmg: 2);
+		Items["RazorBlade"]    = new Equipment("RazorBlade",    "Razor Blade",    "res://icons/Razor Blade.png",    EquipSlot.Weapon, bonusDmg: 2);
+		Items["Scimitar"]      = new Equipment("Scimitar",      "Scimitar",       "res://icons/Scimitar.png",       EquipSlot.Weapon, bonusDmg: 2);
+		Items["WandOfAgility"] = new Equipment("WandOfAgility", "Wand of Agility","res://icons/Wand of Agility.png",EquipSlot.Weapon, bonusDmg: 1, bonusMov: 2);
+
+		// === WEAPONS (TIER 3) ===
+		Items["CaptainsSabre"] = new Equipment("CaptainsSabre", "Captain's Sabre", "res://icons/Captain's Sabre.png", EquipSlot.Weapon, bonusDmg: 3);
+		Items["DualSwords"]    = new Equipment("DualSwords",    "Dual Swords",     "res://icons/Dual Swords.png",     EquipSlot.Weapon, bonusDmg: 3);
+		Items["EbonyRazor"]    = new Equipment("EbonyRazor",    "Ebony Razor",     "res://icons/Ebony Razor.png",     EquipSlot.Weapon, bonusDmg: 3);
+		Items["Hammer"]        = new Equipment("Hammer",        "Hammer",          "res://icons/Hammer.png",          EquipSlot.Weapon, bonusDmg: 3);
+		Items["KingsKnife"]    = new Equipment("KingsKnife",    "King's Knife",    "res://icons/King's Knife.png",    EquipSlot.Weapon, bonusDmg: 3);
+		Items["Yatagan"]       = new Equipment("Yatagan",       "Yatagan",         "res://icons/Yatagan.png",         EquipSlot.Weapon, bonusDmg: 3);
+		Items["DaggerOfSpeed"] = new Equipment("DaggerOfSpeed", "Dagger of Speed", "res://icons/Dagger of Speed.png", EquipSlot.Weapon, bonusDmg: 2, bonusMov: 2);
+
+		// === WEAPONS (TIER 4) ===
+		Items["Bloodaxe"]           = new Equipment("Bloodaxe",           "Bloodaxe",            "res://icons/Bloodaxe.png",            EquipSlot.Weapon, bonusHp: 2, bonusDmg: 5);
+		Items["BlueLightningSword"] = new Equipment("BlueLightningSword", "Blue Lightning Sword", "res://icons/Blue Lightning Sword.png",EquipSlot.Weapon, bonusDmg: 4, bonusMov: 1);
+		Items["BurningEdge"]        = new Equipment("BurningEdge",        "Burning Edge",         "res://icons/Burning Edge.png",        EquipSlot.Weapon, bonusDmg: 4);
+		Items["DualScimitars"]      = new Equipment("DualScimitars",      "Dual Scimitars",       "res://icons/Dual Scimitars.png",      EquipSlot.Weapon, bonusDmg: 4);
+		Items["GoldenFlail"]        = new Equipment("GoldenFlail",        "Golden Flail",         "res://icons/Golden Flail.png",        EquipSlot.Weapon, bonusDmg: 4);
+		Items["MorningStar"]        = new Equipment("MorningStar",        "Morning Star",         "res://icons/Morning Star.png",        EquipSlot.Weapon, bonusDmg: 4);
+		Items["Trident"]            = new Equipment("Trident",            "Trident",              "res://icons/Trident.png",             EquipSlot.Weapon, bonusDmg: 4);
+		Items["GoldenScythe"]       = new Equipment("GoldenScythe",       "Golden Scythe",        "res://icons/Golden Scythe.png",       EquipSlot.Weapon, bonusDmg: 5);
+
+		// === WEAPONS (TIER 5) ===
+		Items["AssassinsDeathknife"] = new Equipment("AssassinsDeathknife", "Assassin's Deathknife","res://icons/Assassin's Deathknife.png", EquipSlot.Weapon, bonusDmg: 6, bonusMov: 1);
+		Items["SapphireGreatsword"]  = new Equipment("SapphireGreatsword",  "Sapphire Greatsword",  "res://icons/Sapphire Greatsword.png",  EquipSlot.Weapon, bonusDmg: 7);
+		Items["VillainsDeathsword"]  = new Equipment("VillainsDeathsword",  "Villain's Deathsword", "res://icons/Villain's Deathsword.png", EquipSlot.Weapon, bonusDmg: 7);
+		Items["HeroicMastersword"]   = new Equipment("HeroicMastersword",   "Heroic Mastersword",   "res://icons/Heroic Mastersword.png",   EquipSlot.Weapon, bonusDmg: 8);
+
+		// =========================================================
+		// === JOKER ITEMS (new) ===
+		// =========================================================
+
+		// Pair Jokers
+		Items["LoversBracelet"] = new Equipment("LoversBracelet", "Lover's Bracelet",
+			"res://icons/Rusty Mail.png",  // placeholder icon path
+			EquipSlot.Armor, bonusHp: 2,
+			jokerEffects: JokerEffect.PairsCountDouble);
+
+		// Straight Jokers
+		Items["WanderersBoots"] = new Equipment("WanderersBoots", "Wanderer's Boots",
+			"res://icons/Agility Cloak.png",
+			EquipSlot.Armor, bonusMov: 1,
+			jokerEffects: JokerEffect.StraightAt3);
+
+		// Flush Jokers
+		Items["ClanCrest"] = new Equipment("ClanCrest", "Clan Crest",
+			"res://icons/helmet.png",
+			EquipSlot.Armor, bonusHp: 1,
+			jokerEffects: JokerEffect.FlushAt3);
+
+		// Face Card Jokers
+		Items["NobilityRing"] = new Equipment("NobilityRing", "Nobility Ring",
+			"res://icons/sword.png",
+			EquipSlot.Weapon, bonusDmg: 1,
+			jokerEffects: JokerEffect.FaceCardsBonus);
+
+		// Tier Multiplier Joker
+		Items["AncientMedallion"] = new Equipment("AncientMedallion", "Ancient Medallion",
+			"res://icons/Golden Shellmail.png",
+			EquipSlot.Armor, bonusHp: 3,
+			jokerEffects: JokerEffect.TierMultiplier);
+
+		// Ace Wild Joker
+		Items["JokersCard"] = new Equipment("JokersCard", "Joker's Card",
+			"res://icons/Scimitar.png",
+			EquipSlot.Weapon, bonusDmg: 2,
+			jokerEffects: JokerEffect.AcesWild);
+
+		// Combined Joker (rare!)
+		Items["FoolsGold"] = new Equipment("FoolsGold", "Fool's Gold",
+			"res://icons/Golden Scythe.png",
+			EquipSlot.Weapon, bonusDmg: 3, bonusMov: 1,
+			jokerEffects: JokerEffect.PairsCountDouble | JokerEffect.FaceCardsBonus);
+	}
 }
 
 
@@ -1177,6 +2085,13 @@ public partial class GameManager
 
 [FILENAME: GameManager.Combat.cs]
 
+// GameManager.Combat.cs  — FULL REPLACEMENT
+// Key changes from original:
+//   1. Initiative queue replaces PlayerTurn/EnemyTurn binary
+//   2. PerformAttackAsync resolves combo before dealing damage
+//   3. Combo attacks (flanking allies) are animated sequentially
+//   4. HandleHover previews the combo visually via ComboVisualizer
+//   5. HandleUnitDeath removes from initiative queue
 using Godot;
 using System.Collections.Generic;
 using System.Linq;
@@ -1184,16 +2099,29 @@ using System.Threading.Tasks;
 
 public partial class GameManager
 {
+	// === INITIATIVE ===
+	private InitiativeQueue _initiative = new InitiativeQueue();
+	private bool _isProcessingTurn = false;
+
+	// === COMBO VISUALIZER ===
+	private ComboVisualizer _comboVisualizer;
+
+	// ── existing fields kept ────────────────────────────────────
 	private List<Unit> _units = new();
 	private Unit _selectedUnit;
 	private Unit _previewedEnemy;
 	private Unit _hoveredUnit;
 	private List<Tile> _movementHighlightTiles = new();
+	private Tween _pulseTween;
+
+	// ============================================================
+	// BATTLE START
+	// ============================================================
 
 	private async void StartBattle(BattleSetup data)
 	{
 		StatsLabel.Text = "Setting up the board...";
-		await ClearBoardAsync(); 
+		await ClearBoardAsync();
 		ApplyEnvironment(data);
 		await SetupGridElevation(data);
 		SpawnDioramas();
@@ -1208,19 +2136,29 @@ public partial class GameManager
 			SpawnUnit(_party[i], true, finalPos);
 		}
 
-		foreach (var e in data.Enemies) 
+		foreach (var e in data.Enemies)
 		{
 			Vector3 finalPos = e.Position;
 			if (_grid.TryGetValue(GetGridPos(finalPos), out Tile tile))
 				finalPos = new Vector3(tile.Position.X, tile.Position.Y, tile.Position.Z);
-			SpawnUnit(new PersistentUnit(_unitDatabase[e.ProfileId]), false, finalPos);
+			SpawnUnit(new PersistentUnit(GameDatabase.Units[e.ProfileId]), false, finalPos);
 		}
-		
+
 		SpawnRandomObstacles(new System.Random().Next(8, 16));
+
+		// Ensure visualizer exists
+		if (_comboVisualizer == null)
+		{
+			_comboVisualizer = new ComboVisualizer();
+			AddChild(_comboVisualizer);
+		}
 
 		_currentTurnNumber = 1;
 		_activeMidBattleEvents = new List<MidBattleEvent>(data.MidBattleEvents);
-		
+
+		// Build initiative queue
+		_initiative.Rebuild(_units);
+
 		await ShowTurnAnnouncer("BATTLE START", new Color(1.0f, 0.85f, 0.2f));
 		CheckMidBattleEvents();
 	}
@@ -1231,140 +2169,337 @@ public partial class GameManager
 		AddChild(u);
 		u.GlobalPosition = pos;
 		u.Setup(data, isFriendly);
-		u.OnDied += HandleUnitDeath; 
+		u.OnDied += HandleUnitDeath;
 		_units.Add(u);
 
 		u.Scale = new Vector3(0.001f, 0.001f, 0.001f);
-		CreateTween().TweenProperty(u, "scale", Vector3.One, 0.35f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+		CreateTween().TweenProperty(u, "scale", Vector3.One, 0.35f)
+			.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
 	}
+
+	// ============================================================
+	// INITIATIVE TURN FLOW
+	// ============================================================
+
+	/// <summary>Called after battle start and after each unit finishes its turn.</summary>
+	private async Task ProcessNextTurn()
+	{
+		if (_isProcessingTurn) return;
+		_isProcessingTurn = true;
+		
+		Unit active = _initiative.Current;
+
+		if (active == null || !GodotObject.IsInstanceValid(active))
+		{
+			_isProcessingTurn = false;
+			return;
+		}
+
+		// Refresh turn order UI
+		RefreshInitiativeUI();
+
+		if (active.IsFriendly)
+		{
+			await ShowTurnAnnouncer($"{active.Data.Profile.Name}'s Turn", new Color(0.2f, 0.8f, 1.0f));
+			_currentState = State.PlayerTurn;
+			_selectedUnit = active;
+			active.SetSelected(true);
+			ShowActions(true);
+			ShowMovementRange(active);
+			RefreshTargetIcons();
+			UpdateStatsUI();
+			// Player takes action; turn ends via EndTurn button or after move+attack
+		}
+		else
+		{
+			_currentState = State.EnemyTurn;
+			ShowActions(false);
+			DeselectUnit();
+			if (StatsLabel != null) StatsLabel.Text = $"{active.Data.Profile.Name}'s Turn (Enemy)";
+			await RunEnemyUnitTurn(active);
+			_isProcessingTurn = false;
+			EndCurrentUnitTurn();
+		}
+
+		_isProcessingTurn = false;
+	}
+
+	/// <summary>Called when the current unit (player or enemy) has finished acting.</summary>
+	private void EndCurrentUnitTurn()
+	{
+		_isProcessingTurn = false;
+		if (_selectedUnit != null)
+		{
+			_selectedUnit.SetSelected(false);
+			_selectedUnit.NewTurn();
+		}
+		_selectedUnit = null;
+		_initiative.Advance();
+		_currentTurnNumber++;
+		CheckMidBattleEvents();
+	}
+
+	// ============================================================
+	// ATTACK WITH COMBO
+	// ============================================================
 
 	private async Task PerformAttackAsync(Unit attacker, Unit target)
 	{
 		await attacker.FaceDirection(target.GlobalPosition);
 
-		// 1. CAPTURE ORIGINAL STATE (position only; rotation stays fixed for lateral-only movement)
+		// 1. Resolve combo BEFORE any damage
+		ComboResult combo = ComboResolver.Resolve(attacker, target, _units, Inventory);
+
+		// 2. Cinematic zoom to fight center
 		Vector3 originalCamPos = Cam.GlobalPosition;
 		float originalFov = Cam.Fov;
 		float originalSize = Cam.Size;
-
-		// 2. CALCULATE THE "FIGHT CENTER"
-		// Mid-point between units, raised slightly for chest-height focus
 		Vector3 actionCenter = (attacker.GlobalPosition + target.GlobalPosition) / 2f + new Vector3(0, 1.0f, 0);
-
-		// 3. LATERAL-ONLY PAN: Move camera in X/Z only so actionCenter is centered in view; no rotation
-		// Camera forward in Godot is -Basis.Z
-		Vector3 forward = -Cam.GlobalTransform.Basis.Z;
-		if (forward.LengthSquared() < 0.0001f) forward = new Vector3(0, 0, -1);
-		else forward = forward.Normalized();
+		Vector3 forward = -Cam.GlobalTransform.Basis.Z.Normalized();
 		Vector3 targetCamPos;
+
 		if (Mathf.Abs(forward.Y) >= 0.0001f)
 		{
-			// Angled camera: place camera so center ray (at same height) passes through actionCenter
 			float t = (actionCenter.Y - originalCamPos.Y) / forward.Y;
 			targetCamPos = new Vector3(
-				actionCenter.X - t * forward.X,
-				originalCamPos.Y,
-				actionCenter.Z - t * forward.Z
-			);
+				actionCenter.X - t * forward.X, originalCamPos.Y, actionCenter.Z - t * forward.Z);
 		}
 		else
 		{
-			// Top-down: pan in XZ so projected center aligns
 			Vector3 toCenter = actionCenter - originalCamPos;
 			float t = toCenter.Dot(forward) / forward.LengthSquared();
-			Vector3 delta = toCenter - (t * forward);
-			delta.Y = 0;
+			Vector3 delta = toCenter - (t * forward); delta.Y = 0;
 			targetCamPos = originalCamPos + delta;
 		}
 
-		// 4. ZOOM & PAN IN (smooth, lateral only, no angle change)
 		Tween zoomIn = CreateTween().SetParallel(true);
 		zoomIn.TweenProperty(Cam, "global_position", targetCamPos, 0.45f)
 			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
-			zoomIn.TweenProperty(Cam, "size", originalSize * 0.85f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			zoomIn.TweenProperty(Cam, "size", originalSize * 0.85f, 0.45f)
+				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 		else
-			zoomIn.TweenProperty(Cam, "fov", originalFov - 10f, 0.45f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			zoomIn.TweenProperty(Cam, "fov", originalFov - 10f, 0.45f)
+				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 
 		await ToSignal(zoomIn, "finished");
-		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+		await ToSignal(GetTree().CreateTimer(0.2f), "timeout");
 
-		// 4. THE ACTION (Lunge)
-		Vector3 attackerStartPos = attacker.GlobalPosition;
-		Vector3 attackDir = (target.GlobalPosition - attackerStartPos).Normalized();
-		Vector3 lungePos = attackerStartPos + (attackDir * 0.8f);
-
-		Tween lunge = CreateTween();
-		lunge.TweenProperty(attacker, "global_position", lungePos, 0.1f).SetTrans(Tween.TransitionType.Sine);
-		lunge.TweenProperty(attacker, "global_position", attackerStartPos, 0.2f).SetTrans(Tween.TransitionType.Quad);
-
-		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
-
-		// 5. IMPACT & SHAKE
-		int damage = GD.RandRange(attacker.GetMinDamage(), attacker.GetMaxDamage());
-		SpawnFloatingText(target.GlobalPosition, damage.ToString(), new Color(1, 0.2f, 0.2f));
-		
-		var damageTask = target.TakeDamage(damage, attacker);
-		
-		// Shake the camera using local relative offsets
-		for (int i = 0; i < 6; i++) {
-			float s = 0.15f;
-			Vector3 shakeOffset = new Vector3((float)GD.RandRange(-s, s), (float)GD.RandRange(-s, s), 0);
-			Cam.HOffset = shakeOffset.X;
-			Cam.VOffset = shakeOffset.Y;
-			await ToSignal(GetTree().CreateTimer(0.03f), "timeout");
+		// 3. Show COMBO announcement if there's a hand
+		if (combo.HasCombo)
+		{
+			_comboVisualizer?.ShowComboPreview(combo, Cam);
+			await ShowComboHandAnnouncer(combo.HandResult);
 		}
-		Cam.HOffset = 0; Cam.VOffset = 0;
 
-		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
+		// 4. Execute all attacks from AttackMap: attacker hits primary, allies hit their flanked enemies
+		var attackTasks = new List<Task>();
 
-		// 6. ZOOM OUT & RESET (position and zoom only; rotation never changed)
+		foreach (var (enemyTarget, attackerList) in combo.AttackMap)
+		{
+			if (!GodotObject.IsInstanceValid(enemyTarget)) continue;
+
+			foreach (var (attackingUnit, multiplier) in attackerList)
+			{
+				if (!GodotObject.IsInstanceValid(attackingUnit)) continue;
+				attackTasks.Add(ExecuteSingleAttack(attackingUnit, enemyTarget, multiplier));
+				await ToSignal(GetTree().CreateTimer(0.05f), "timeout"); // brief stagger
+			}
+		}
+
+		await Task.WhenAll(attackTasks);
+
+		// 5. Clear visuals
+		_comboVisualizer?.ClearVisuals();
+
+		// 6. Camera zoom out
 		Tween zoomOut = CreateTween().SetParallel(true);
 		zoomOut.TweenProperty(Cam, "global_position", originalCamPos, 0.5f)
 			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
 		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
-			zoomOut.TweenProperty(Cam, "size", originalSize, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+			zoomOut.TweenProperty(Cam, "size", originalSize, 0.5f)
+				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
 		else
-			zoomOut.TweenProperty(Cam, "fov", originalFov, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
-
+			zoomOut.TweenProperty(Cam, "fov", originalFov, 0.5f)
+				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
 		await ToSignal(zoomOut, "finished");
-		await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+		await ToSignal(GetTree().CreateTimer(0.2f), "timeout");
 
-		// 7. FINALIZE
 		attacker.HasAttacked = true;
 		attacker.UpdateVisuals();
 		RefreshTargetIcons();
-		await damageTask; 
 	}
 
-	// Helper to calculate how much to shift the lens to "look at" a world position
-	private Vector2 GetCameraPanOffsets(Vector3 targetWorldPos)
+	private async Task ExecuteSingleAttack(Unit attackingUnit, Unit enemyTarget, float multiplier)
 	{
-		// Project the world point to the camera's local space
-		Vector3 localPos = Cam.GlobalTransform.AffineInverse() * targetWorldPos;
-		// The H/V offsets in Godot 3D effectively shift the projection matrix
-		// This is a rough approximation that feels good for tactical heights
-		return new Vector2(localPos.X * 0.2f, -localPos.Y * 0.2f);
-	}
-	
-	private async void HandleUnitDeath(Unit deadUnit)
-	{
-		Input.SetCustomMouseCursor(null);
-		_units.Remove(deadUnit); 
+		if (!GodotObject.IsInstanceValid(attackingUnit) || !GodotObject.IsInstanceValid(enemyTarget)) return;
 
-		bool enemiesAlive = _units.Any(u => IsInstanceValid(u) && !u.IsFriendly);
-		if (!enemiesAlive)
+		Vector3 attackerStartPos = attackingUnit.GlobalPosition;
+		Vector3 attackDir = (enemyTarget.GlobalPosition - attackerStartPos).Normalized();
+		Vector3 lungePos = attackerStartPos + (attackDir * 0.8f);
+
+		Tween lunge = CreateTween();
+		lunge.TweenProperty(attackingUnit, "global_position", lungePos, 0.1f)
+			.SetTrans(Tween.TransitionType.Sine);
+		lunge.TweenProperty(attackingUnit, "global_position", attackerStartPos, 0.2f)
+			.SetTrans(Tween.TransitionType.Quad);
+
+		await ToSignal(GetTree().CreateTimer(0.1f), "timeout");
+
+		int baseDamage = GD.RandRange(attackingUnit.GetMinDamage(), attackingUnit.GetMaxDamage());
+		int finalDamage = Mathf.RoundToInt(baseDamage * multiplier);
+
+		// Tinted float text to show combo multiplier
+		Color dmgColor = multiplier > 1.0f ? new Color(1f, 0.85f, 0.1f) : new Color(1f, 0.2f, 0.2f);
+		string dmgText = multiplier > 1.0f ? $"{finalDamage} ×{multiplier:F2}" : finalDamage.ToString();
+		SpawnFloatingText(enemyTarget.GlobalPosition, dmgText, dmgColor, multiplier > 1.5f ? 40 : 30);
+
+		var damageTask = enemyTarget.TakeDamage(finalDamage, attackingUnit);
+
+		// Camera shake
+		for (int i = 0; i < 5; i++)
 		{
-			_currentState = State.Cutscene; 
-			ClearMovementRange();
-			ClearHover();
-			DeselectUnit();
-			ShowActions(false);
-
-			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
-			await ClearBoardAsync(); 
-			AdvanceScript(); 
+			float s = 0.12f;
+			Cam.HOffset = (float)GD.RandRange(-s, s);
+			Cam.VOffset = (float)GD.RandRange(-s, s);
+			await ToSignal(GetTree().CreateTimer(0.03f), "timeout");
 		}
+		Cam.HOffset = 0; Cam.VOffset = 0;
+		await damageTask;
+	}
+
+	private async Task ShowComboHandAnnouncer(HandResult result)
+	{
+		Label announcer = new Label
+		{
+			Text = result.DisplayName,
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center
+		};
+		announcer.AddThemeFontSizeOverride("font_size", 72);
+		announcer.AddThemeColorOverride("font_color", result.ComboColor);
+		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0));
+		announcer.AddThemeConstantOverride("outline_size", 18);
+		if (_fantasyFont != null) announcer.AddThemeFontOverride("font", _fantasyFont);
+		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer); else AddChild(announcer);
+
+		announcer.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
+		announcer.Scale = Vector2.Zero;
+		announcer.Modulate = new Color(1, 1, 1, 0);
+
+		Tween tween = CreateTween();
+		tween.Parallel().TweenProperty(announcer, "scale", new Vector2(1.1f, 1.1f), 0.3f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		tween.Parallel().TweenProperty(announcer, "modulate:a", 1.0f, 0.2f);
+		tween.Chain().TweenInterval(0.8f);
+		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.4f, 1.4f), 0.25f)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+		tween.Parallel().TweenProperty(announcer, "modulate:a", 0.0f, 0.25f);
+		tween.Finished += () => announcer.QueueFree();
+
+		await ToSignal(tween, Tween.SignalName.Finished);
+	}
+
+	// ============================================================
+	// ENEMY AI TURN (single unit)
+	// ============================================================
+
+	private async Task RunEnemyUnitTurn(Unit enemy)
+	{
+		if (!GodotObject.IsInstanceValid(enemy)) return;
+
+		var players = _units.Where(x => GodotObject.IsInstanceValid(x) && x.IsFriendly).ToList();
+		if (players.Count == 0) return;
+
+		Unit bestTarget = null;
+		Vector3 bestMovePos = enemy.GlobalPosition;
+		float bestScore = -9999f;
+
+		Vector2I enemyCoords = new Vector2I(
+			Mathf.RoundToInt(enemy.GlobalPosition.X / TileSize),
+			Mathf.RoundToInt(enemy.GlobalPosition.Z / TileSize));
+		var reachable = GetReachableTiles(enemyCoords, enemy.Data.Movement);
+		reachable[enemyCoords] = enemyCoords;
+
+		foreach (var player in players)
+		{
+			float targetScore = 0;
+			Vector3 optimalTile = enemy.GlobalPosition;
+			bool canAttackThisTurn = false;
+			int distToPlayer = GetGridDistance(enemy.GlobalPosition, player.GlobalPosition);
+
+			if (distToPlayer <= enemy.Data.AttackRange) canAttackThisTurn = true;
+			else
+			{
+				int closestWeCanGet = distToPlayer;
+				foreach (var tilePos in reachable.Keys)
+				{
+					Vector3 worldPos = new Vector3(tilePos.X * TileSize, 0.01f, tilePos.Y * TileSize);
+					int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
+					if (distFromTileToPlayer <= enemy.Data.AttackRange)
+					{
+						canAttackThisTurn = true;
+						optimalTile = worldPos;
+						break;
+					}
+					else if (distFromTileToPlayer < closestWeCanGet)
+					{
+						closestWeCanGet = distFromTileToPlayer;
+						optimalTile = worldPos;
+					}
+				}
+			}
+
+			if (canAttackThisTurn) targetScore += 1000;
+			targetScore -= player.Data.CurrentHP * 10;
+			if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.GetTotalDamage()) targetScore += 2000;
+			targetScore -= distToPlayer;
+
+			if (targetScore > bestScore)
+			{
+				bestScore = targetScore;
+				bestTarget = player;
+				bestMovePos = optimalTile;
+			}
+		}
+
+		if (bestMovePos != enemy.GlobalPosition)
+		{
+			Vector2I targetCoords = new Vector2I(
+				Mathf.RoundToInt(bestMovePos.X / TileSize),
+				Mathf.RoundToInt(bestMovePos.Z / TileSize));
+			var path = ExtractPath(reachable, enemyCoords, targetCoords);
+			await enemy.MoveAlongPath(path);
+		}
+
+		if (bestTarget != null && GodotObject.IsInstanceValid(bestTarget) &&
+			GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.Data.AttackRange)
+		{
+			await PerformAttackAsync(enemy, bestTarget);
+			if (_currentState != State.EnemyTurn) return;
+			await ToSignal(GetTree().CreateTimer(0.3f), "timeout");
+		}
+
+		enemy.HasMoved = true;
+		enemy.HasAttacked = true;
+		enemy.UpdateVisuals();
+	}
+
+	// ============================================================
+	// PLAYER INPUT
+	// ============================================================
+
+	private void OnEndTurnPressed()
+	{
+		if (_currentState != State.PlayerTurn || _levelUpActive) return;
+		if (!_units.Any(u => GodotObject.IsInstanceValid(u) && !u.IsFriendly)) return;
+
+		ClearHover();
+		_comboVisualizer?.ClearVisuals();
+		DeselectUnit();
+		EndCurrentUnitTurn();
+		_ = ProcessNextTurn();
 	}
 
 	private void HandleClick(Vector2 mousePos)
@@ -1376,7 +2511,7 @@ public partial class GameManager
 		query.CollideWithAreas = true;
 		var result = spaceState.IntersectRay(query);
 
-		if (result.Count == 0) 
+		if (result.Count == 0)
 		{
 			if (_selectedUnit != null && _currentState != State.SelectingAttackTarget) DeselectUnit();
 			return;
@@ -1384,34 +2519,40 @@ public partial class GameManager
 
 		Node collider = (Node)result["collider"];
 
-		// === CAMP CLICK LOGIC ===
+		// === CAMP ===
 		if (_currentState == State.Camp)
 		{
-			if (collider.GetParent() is Unit campUnit) // Renamed to campUnit here!
+			if (collider.GetParent() is Unit campUnit)
 			{
 				string charName = campUnit.Data.Profile.Name;
 				var conv = GetAvailableCampConversation(charName);
 				if (conv != null)
 				{
-					// Reset the hover squish before triggering dialogue
-					campUnit.SetHovered(false); 
+					campUnit.SetHovered(false);
 					TriggerCampConversation(conv);
 				}
 			}
-			return; // Crucial: Stop processing clicks entirely if we are in Camp!
+			return;
 		}
 
-		// === COMBAT CLICK LOGIC ===
+		// === COMBAT ===
 		if (collider.GetParent() is Unit clickedUnit)
 		{
-			if (clickedUnit.IsFriendly) SelectUnit(clickedUnit);
-			else 
+			if (clickedUnit.IsFriendly)
 			{
-				bool canSmartAttack = _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked && GetGridDistance(_selectedUnit.GlobalPosition, clickedUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+				// Only allow clicking the current initiative unit
+				if (clickedUnit == _initiative.Current) SelectUnit(clickedUnit);
+				else ShowUnitInfo(clickedUnit);
+			}
+			else
+			{
+				bool canSmartAttack = _currentState == State.PlayerTurn
+					&& _selectedUnit != null && !_selectedUnit.HasAttacked
+					&& GetGridDistance(_selectedUnit.GlobalPosition, clickedUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
 
 				if (_currentState == State.SelectingAttackTarget || canSmartAttack)
 				{
-					ClearAttackPreview(); 
+					ClearAttackPreview();
 					TryAttackTarget(clickedUnit);
 				}
 				else ShowUnitInfo(clickedUnit);
@@ -1419,49 +2560,45 @@ public partial class GameManager
 		}
 		else if (collider.GetParent() is Tile tile)
 		{
-			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved) TryMoveTo(tile.GlobalPosition);
+			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
+				TryMoveTo(tile.GlobalPosition);
 		}
 	}
 
 	private async void TryAttackTarget(Unit target)
 	{
 		if (_selectedUnit == null) return;
+		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) > _selectedUnit.Data.AttackRange) return;
 
-		if (GetGridDistance(_selectedUnit.GlobalPosition, target.GlobalPosition) <= _selectedUnit.Data.AttackRange)
+		await PerformAttackAsync(_selectedUnit, target);
+		if (_selectedUnit == null || !GodotObject.IsInstanceValid(_selectedUnit)) return;
+
+		CancelAttackMode();
+		UpdateStatsUI();
+		ShowActions(true);
+
+		// Auto-end turn if fully exhausted
+		if (_selectedUnit.HasMoved && _selectedUnit.HasAttacked)
 		{
-			await PerformAttackAsync(_selectedUnit, target);
-			if (_selectedUnit == null || !IsInstanceValid(_selectedUnit)) return;
-
-			CancelAttackMode();
-			UpdateStatsUI();
-			ShowActions(true);
-
-			if (_selectedUnit.HasMoved) DeselectUnit();
+			EndCurrentUnitTurn();
+			_ = ProcessNextTurn();
 		}
 	}
 
 	private void SelectUnit(Unit u)
 	{
-		if (u.HasMoved && u.HasAttacked) 
-		{
-			ShowUnitInfo(u);
-			return;
-		}
-
+		if (u.HasMoved && u.HasAttacked) { ShowUnitInfo(u); return; }
 		if (_selectedUnit != null && _selectedUnit != u) _selectedUnit.SetSelected(false);
-
 		_selectedUnit = u;
 		_selectedUnit.SetSelected(true);
-		
+
 		Node3D sprite = _selectedUnit.GetNode<Node3D>("Sprite3D");
 		if (!sprite.HasMeta("BaseScale")) sprite.SetMeta("BaseScale", sprite.Scale);
 		Vector3 baseScale = sprite.GetMeta("BaseScale").AsVector3();
-		Vector3 stretchedScale = new Vector3(baseScale.X * 0.8f, baseScale.Y * 1.3f, baseScale.Z * 0.8f);
-
 		Tween tween = CreateTween();
-		tween.TweenProperty(sprite, "scale", stretchedScale, 0.1f);
+		tween.TweenProperty(sprite, "scale", new Vector3(baseScale.X * 0.8f, baseScale.Y * 1.3f, baseScale.Z * 0.8f), 0.1f);
 		tween.TweenProperty(sprite, "scale", baseScale, 0.2f).SetTrans(Tween.TransitionType.Bounce);
-		
+
 		ShowUnitInfo(u);
 		UpdateStatsUI();
 		ShowActions(true);
@@ -1487,31 +2624,35 @@ public partial class GameManager
 	private async void TryMoveTo(Vector3 targetPos)
 	{
 		if (_selectedUnit == null) return;
-
-		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(_selectedUnit.GlobalPosition.X / TileSize), Mathf.RoundToInt(_selectedUnit.GlobalPosition.Z / TileSize));
-		Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(targetPos.X / TileSize), Mathf.RoundToInt(targetPos.Z / TileSize));
-
+		Vector2I startCoords = new Vector2I(
+			Mathf.RoundToInt(_selectedUnit.GlobalPosition.X / TileSize),
+			Mathf.RoundToInt(_selectedUnit.GlobalPosition.Z / TileSize));
+		Vector2I targetCoords = new Vector2I(
+			Mathf.RoundToInt(targetPos.X / TileSize),
+			Mathf.RoundToInt(targetPos.Z / TileSize));
 		var reachable = GetReachableTiles(startCoords, _selectedUnit.Data.Movement);
 
-		if (reachable.ContainsKey(targetCoords))
+		if (!reachable.ContainsKey(targetCoords)) return;
+
+		var path = ExtractPath(reachable, startCoords, targetCoords);
+		ShowActions(false);
+		RefreshTargetIcons();
+		ClearMovementRange();
+
+		await _selectedUnit.MoveAlongPath(path);
+
+		if (_selectedUnit != null)
 		{
-			var path = ExtractPath(reachable, startCoords, targetCoords);
-
-			ShowActions(false);
+			CheckAutoExhaust(_selectedUnit);
+			_selectedUnit.UpdateVisuals();
+			UpdateStatsUI();
+			ShowActions(true);
 			RefreshTargetIcons();
-			ClearMovementRange();
 
-			await _selectedUnit.MoveAlongPath(path);
-
-			if (_selectedUnit != null)
+			if (_selectedUnit.HasMoved && _selectedUnit.HasAttacked)
 			{
-				CheckAutoExhaust(_selectedUnit);
-				_selectedUnit.UpdateVisuals();
-				UpdateStatsUI();
-				ShowActions(true);
-				RefreshTargetIcons();
-
-				if (_selectedUnit.HasAttacked) DeselectUnit();
+				EndCurrentUnitTurn();
+				_ = ProcessNextTurn();
 			}
 		}
 	}
@@ -1523,67 +2664,62 @@ public partial class GameManager
 		var to = from + Cam.ProjectRayNormal(mousePos) * 1000;
 		var query = PhysicsRayQueryParameters3D.Create(from, to);
 		query.CollideWithAreas = true;
-
 		var result = spaceState.IntersectRay(query);
 
-		if (result.Count == 0)
-		{
-			ClearHover();
-			ClearAttackPreview(); 
-			return;
-		}
+		if (result.Count == 0) { ClearHover(); ClearAttackPreview(); return; }
 
 		Node collider = (Node)result["collider"];
 		Tile targetTile = null;
 		Unit newlyHoveredUnit = null;
 
-		if (collider.GetParent() is Unit u) 
+		if (collider.GetParent() is Unit u)
 		{
 			newlyHoveredUnit = u;
-			Vector2I gridPos = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+			Vector2I gridPos = new Vector2I(
+				Mathf.RoundToInt(u.GlobalPosition.X / TileSize),
+				Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
 			if (_grid.TryGetValue(gridPos, out Tile underlyingTile)) targetTile = underlyingTile;
 		}
 		else if (collider.GetParent() is Tile tile) targetTile = tile;
 
 		if (newlyHoveredUnit != _hoveredUnit)
 		{
-			if (_hoveredUnit != null && IsInstanceValid(_hoveredUnit)) 
+			if (_hoveredUnit != null && GodotObject.IsInstanceValid(_hoveredUnit))
 				_hoveredUnit.SetHovered(false);
-			
 			ClearAttackPreview();
+			_comboVisualizer?.ClearVisuals();
 			_hoveredUnit = newlyHoveredUnit;
-			
+
 			if (_hoveredUnit != null)
 			{
-				// === CAMP HOVER LOGIC ===
 				if (_currentState == State.Camp)
 				{
-					string charName = _hoveredUnit.Data.Profile.Name;
-					var conv = GetAvailableCampConversation(charName);
-					
-					// Only trigger the juicy hover bounce if they want to talk
+					var conv = GetAvailableCampConversation(_hoveredUnit.Data.Profile.Name);
 					if (conv != null)
 					{
 						_hoveredUnit.SetHovered(true);
-						// Optional: Change the cursor to indicate they can be clicked
-						if (AttackCursorIcon != null) 
+						if (AttackCursorIcon != null)
 							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
 					}
 				}
-				// === COMBAT HOVER LOGIC ===
-				else 
+				else
 				{
-					bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null && !_selectedUnit.HasAttacked && 
-										(_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn) && 
-										GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
-					
+					bool isTargetable = !_hoveredUnit.IsFriendly && _selectedUnit != null
+						&& !_selectedUnit.HasAttacked
+						&& (_currentState == State.SelectingAttackTarget || _currentState == State.PlayerTurn)
+						&& GetGridDistance(_selectedUnit.GlobalPosition, _hoveredUnit.GlobalPosition) <= _selectedUnit.Data.AttackRange;
+
 					_hoveredUnit.SetHovered(true, isTargetable);
 
 					if (isTargetable)
 					{
 						_previewedEnemy = _hoveredUnit;
 						_previewedEnemy.PreviewDamage(_selectedUnit.GetMinDamage());
-						
+
+						// === COMBO PREVIEW ===
+						ComboResult preview = ComboResolver.Resolve(_selectedUnit, _hoveredUnit, _units, Inventory);
+						_comboVisualizer?.ShowComboPreview(preview, Cam);
+
 						if (_currentState == State.PlayerTurn && AttackCursorIcon != null)
 							Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
 					}
@@ -1593,171 +2729,182 @@ public partial class GameManager
 
 		if (targetTile != _hoveredTile)
 		{
-			ClearHover();                  
+			ClearHover();
 			_hoveredTile = targetTile;
-
-			if (_hoveredTile != null && _currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasMoved)
-			{
-				bool canMoveHere = _movementHighlightTiles.Contains(_hoveredTile);
-				if (canMoveHere) _hoveredTile.SetHighlight(true, new Color(0f, 1f, 0f, 0.7f)); 
-			}
+			if (_hoveredTile != null && _currentState == State.PlayerTurn
+				&& _selectedUnit != null && !_selectedUnit.HasMoved
+				&& _movementHighlightTiles.Contains(_hoveredTile))
+				_hoveredTile.SetHighlight(true, new Color(0f, 1f, 0f, 0.7f));
 		}
 	}
 
-	private void ClearHover()
+	// ============================================================
+	// DEATH HANDLER
+	// ============================================================
+
+	private async void HandleUnitDeath(Unit deadUnit)
 	{
-		if (_hoveredTile != null)
+		Input.SetCustomMouseCursor(null);
+		_units.Remove(deadUnit);
+		_initiative.Remove(deadUnit);
+
+		bool enemiesAlive = _units.Any(u => GodotObject.IsInstanceValid(u) && !u.IsFriendly);
+		if (!enemiesAlive)
 		{
-			if (_movementHighlightTiles.Contains(_hoveredTile)) 
-				_hoveredTile.SetHighlight(true, new Color(0.35f, 0.72f, 1.0f, 0.28f));
-			else 
-				_hoveredTile.SetHighlight(false); 
-			_hoveredTile = null;
+			_currentState = State.Cutscene;
+			ClearMovementRange();
+			ClearHover();
+			DeselectUnit();
+			ShowActions(false);
+			_comboVisualizer?.ClearVisuals();
+
+			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
+			await ClearBoardAsync();
+			AdvanceScript();
 		}
 	}
 
-	private async void StartEnemyTurn()
+	// ============================================================
+	// INITIATIVE UI
+	// ============================================================
+
+	private Control _initiativeBar;
+
+	private void RefreshInitiativeUI()
 	{
-		_currentState = State.EnemyTurn;
-		ShowActions(false);
-		DeselectUnit();
-		ClearMovementRange();
-		RefreshTargetIcons();
-		if (StatsLabel != null) StatsLabel.Text = "Enemy Turn...";
+		if (_initiativeBar == null) BuildInitiativeBar();
+		if (_initiativeBar == null) return;
 
-		_ = ShowTurnAnnouncer("ENEMY TURN", new Color(1.0f, 0.2f, 0.2f));
-		await ToSignal(GetTree().CreateTimer(1.5f), "timeout");
-
-		var enemies = _units.Where(x => IsInstanceValid(x) && !x.IsFriendly).ToList();
-
-		foreach (var enemy in enemies)
+		// Kill the old pulse tween before wiping the children it targets
+		if (_pulseTween != null && _pulseTween.IsValid())
 		{
-			if (!IsInstanceValid(enemy)) continue;
-
-			var players = _units.Where(x => IsInstanceValid(x) && x.IsFriendly).ToList();
-			if (players.Count == 0) break; 
-
-			Unit bestTarget = null;
-			Vector3 bestMovePos = enemy.GlobalPosition;
-			float bestScore = -9999f; 
-
-			Vector2I enemyCoords = new Vector2I(Mathf.RoundToInt(enemy.GlobalPosition.X / TileSize), Mathf.RoundToInt(enemy.GlobalPosition.Z / TileSize));
-			var reachable = GetReachableTiles(enemyCoords, enemy.Data.Movement);
-			reachable[enemyCoords] = enemyCoords;
-
-			foreach (var player in players)
-			{
-				float targetScore = 0;
-				Vector3 optimalTile = enemy.GlobalPosition;
-				bool canAttackThisTurn = false;
-				int distToPlayer = GetGridDistance(enemy.GlobalPosition, player.GlobalPosition);
-
-				if (distToPlayer <= enemy.Data.AttackRange) canAttackThisTurn = true;
-				else
-				{
-					int closestWeCanGet = distToPlayer;
-					foreach (var tilePos in reachable.Keys)
-					{
-						Vector3 worldPos = new Vector3(tilePos.X * TileSize, 0.01f, tilePos.Y * TileSize);
-						int distFromTileToPlayer = GetGridDistance(worldPos, player.GlobalPosition);
-						
-						if (distFromTileToPlayer <= enemy.Data.AttackRange)
-						{
-							canAttackThisTurn = true;
-							optimalTile = worldPos;
-							break; 
-						}
-						else if (distFromTileToPlayer < closestWeCanGet)
-						{
-							closestWeCanGet = distFromTileToPlayer;
-							optimalTile = worldPos;
-						}
-					}
-				}
-
-				if (canAttackThisTurn) targetScore += 1000;
-				targetScore -= player.Data.CurrentHP * 10; 
-				if (canAttackThisTurn && player.Data.CurrentHP <= enemy.Data.AttackDamage) targetScore += 2000; 
-				targetScore -= distToPlayer;
-
-				if (targetScore > bestScore)
-				{
-					bestScore = targetScore;
-					bestTarget = player;
-					bestMovePos = optimalTile;
-				}
-			}
-			
-			if (bestMovePos != enemy.GlobalPosition)
-			{
-				Vector2I targetCoords = new Vector2I(Mathf.RoundToInt(bestMovePos.X / TileSize), Mathf.RoundToInt(bestMovePos.Z / TileSize));
-				var path = ExtractPath(reachable, enemyCoords, targetCoords);
-				await enemy.MoveAlongPath(path);
-			}
-
-			if (bestTarget != null && GetGridDistance(enemy.GlobalPosition, bestTarget.GlobalPosition) <= enemy.Data.AttackRange)
-			{
-				await PerformAttackAsync(enemy, bestTarget); 
-				if (_currentState != State.EnemyTurn) return;
-				await ToSignal(GetTree().CreateTimer(0.4f), "timeout"); 
-			}
-			
-			enemy.HasMoved = true;
-			enemy.HasAttacked = true;
-			enemy.UpdateVisuals();
+			_pulseTween.Kill();
+			_pulseTween = null;
 		}
 
-		foreach (var u in _units.Where(x => IsInstanceValid(x) && x.IsFriendly)) u.NewTurn();
-		
-		_currentTurnNumber++;
-		CheckMidBattleEvents();
+		foreach (Node child in _initiativeBar.GetChildren()) child.QueueFree();
+
+		var order = _initiative.AllInOrder();
+		int currentIdx = order.IndexOf(_initiative.Current);
+
+		for (int i = 0; i < Mathf.Min(order.Count, 8); i++)
+		{
+			int idx = (currentIdx + i) % Mathf.Max(1, order.Count);
+			if (idx < 0 || idx >= order.Count) continue;
+			Unit u = order[idx];
+			if (!GodotObject.IsInstanceValid(u)) continue;
+
+			bool isCurrent = i == 0;
+			PanelContainer pip = new PanelContainer
+			{
+				CustomMinimumSize = new Vector2(isCurrent ? 70 : 50, isCurrent ? 70 : 50)
+			};
+
+			Color borderColor = u.IsFriendly
+				? new Color(0.3f, 0.8f, 1.0f)
+				: new Color(1.0f, 0.3f, 0.3f);
+			if (isCurrent) borderColor = new Color(1.0f, 0.9f, 0.2f);
+
+			pip.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+			{
+				BgColor = new Color(0.08f, 0.08f, 0.1f, 0.9f),
+				CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
+				CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
+				BorderWidthBottom = isCurrent ? 4 : 2,
+				BorderWidthTop    = isCurrent ? 4 : 2,
+				BorderWidthLeft   = isCurrent ? 4 : 2,
+				BorderWidthRight  = isCurrent ? 4 : 2,
+				BorderColor = borderColor,
+				ShadowSize  = isCurrent ? 8 : 4
+			});
+
+			VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+			vbox.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			pip.AddChild(vbox);
+
+			Label nameLabel = new Label
+			{
+				Text = u.Data.Profile.Name.Substring(0, Mathf.Min(4, u.Data.Profile.Name.Length)),
+				HorizontalAlignment = HorizontalAlignment.Center
+			};
+			nameLabel.AddThemeFontSizeOverride("font_size", isCurrent ? 14 : 11);
+			nameLabel.AddThemeColorOverride("font_color", borderColor);
+
+			string cardStr = u.Data.CardRank == CardRank.None
+				? "—"
+				: $"{SuitSymbol(u.Data.CardSuit)}{u.Data.CardRank.DisplayName()}";
+			Label cardLabel = new Label
+			{
+				Text = cardStr,
+				HorizontalAlignment = HorizontalAlignment.Center
+			};
+			cardLabel.AddThemeFontSizeOverride("font_size", 10);
+			cardLabel.AddThemeColorOverride("font_color", SuitColor(u.Data.CardSuit));
+
+			vbox.AddChild(nameLabel);
+			vbox.AddChild(cardLabel);
+			_initiativeBar.AddChild(pip);
+
+			// Only ONE looping tween, stored so we can kill it next refresh
+			if (isCurrent)
+			{
+				pip.PivotOffset = pip.CustomMinimumSize / 2;
+				_pulseTween = CreateTween().SetLoops();
+				_pulseTween.TweenProperty(pip, "scale", new Vector2(1.08f, 1.08f), 0.5f)
+					.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				_pulseTween.TweenProperty(pip, "scale", Vector2.One, 0.5f)
+					.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			}
+		}
 	}
 
-	private void OnEndTurnPressed() 
-	{ 
-		if (_currentState != State.PlayerTurn || _levelUpActive) return; 
-		if (!_units.Any(u => IsInstanceValid(u) && !u.IsFriendly)) return;
-		StartEnemyTurn(); 
-	}
-
-	private void ShowMovementRange(Unit u)
+	private void BuildInitiativeBar()
 	{
-		ClearMovementRange();
-		if (u == null || u.HasMoved) return;
+		_initiativeBar = new HBoxContainer();
+		_initiativeBar.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+		_initiativeBar.Position = new Vector2(0, 10);
+		_initiativeBar.AddThemeConstantOverride("separation", 8);
+		_initiativeBar.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
 
-		Vector2I startCoords = new Vector2I(Mathf.RoundToInt(u.GlobalPosition.X / TileSize), Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
-		var reachable = GetReachableTiles(startCoords, u.Data.Movement);
-		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
-		
-		foreach (var kvp in reachable)
-		{
-			if (kvp.Key == startCoords) continue;
-			if (_grid.TryGetValue(kvp.Key, out Tile tile))
-			{
-				tile.SetHighlight(true, moveColor);
-				_movementHighlightTiles.Add(tile);
-			}
-		}
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_initiativeBar);
+		else AddChild(_initiativeBar);
 	}
+
+	private static Color SuitColor(CardSuit suit) => suit switch
+	{
+		CardSuit.Hearts   => new Color(0.9f, 0.2f, 0.2f),
+		CardSuit.Diamonds => new Color(0.9f, 0.2f, 0.2f),
+		CardSuit.Clubs    => new Color(0.7f, 0.7f, 0.7f),
+		CardSuit.Spades   => new Color(0.7f, 0.7f, 0.7f),
+		_                 => Colors.Gray
+	};
+
+	private static string SuitSymbol(CardSuit suit) => suit switch
+	{
+		CardSuit.Hearts   => "♥",
+		CardSuit.Diamonds => "♦",
+		CardSuit.Clubs    => "♣",
+		CardSuit.Spades   => "♠",
+		_                 => "?"
+	};
+
+	// ============================================================
+	// UNCHANGED HELPERS (kept from original)
+	// ============================================================
 
 	private void CheckAutoExhaust(Unit u)
 	{
 		if (!u.IsFriendly || u.HasAttacked) return;
-
-		bool enemyInRange = _units.Any(enemy => !enemy.IsFriendly && IsInstanceValid(enemy) && GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.Data.AttackRange);
-		if (!enemyInRange)
-		{
-			u.HasAttacked = true;
-			u.UpdateVisuals();
-		}
+		bool enemyInRange = _units.Any(enemy =>
+			!enemy.IsFriendly && GodotObject.IsInstanceValid(enemy)
+			&& GetGridDistance(u.GlobalPosition, enemy.GlobalPosition) <= u.Data.AttackRange);
+		if (!enemyInRange) { u.HasAttacked = true; u.UpdateVisuals(); }
 	}
 
 	private int GetGridDistance(Vector3 posA, Vector3 posB)
 	{
-		int ax = Mathf.RoundToInt(posA.X / TileSize);
-		int az = Mathf.RoundToInt(posA.Z / TileSize);
-		int bx = Mathf.RoundToInt(posB.X / TileSize);
-		int bz = Mathf.RoundToInt(posB.Z / TileSize);
+		int ax = Mathf.RoundToInt(posA.X / TileSize), az = Mathf.RoundToInt(posA.Z / TileSize);
+		int bx = Mathf.RoundToInt(posB.X / TileSize), bz = Mathf.RoundToInt(posB.Z / TileSize);
 		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
 	}
 
@@ -1765,14 +2912,11 @@ public partial class GameManager
 	{
 		foreach (var u in _units)
 		{
-			if (!IsInstanceValid(u)) continue;
-			u.SetTargetable(false); 
-
+			if (!GodotObject.IsInstanceValid(u)) continue;
+			u.SetTargetable(false);
 			if (_currentState == State.PlayerTurn && _selectedUnit != null && !_selectedUnit.HasAttacked)
-			{
 				if (!u.IsFriendly && GetGridDistance(_selectedUnit.GlobalPosition, u.GlobalPosition) <= _selectedUnit.Data.AttackRange)
 					u.SetTargetable(true);
-			}
 		}
 	}
 
@@ -1784,12 +2928,44 @@ public partial class GameManager
 
 	private void ClearAttackPreview()
 	{
-		if (_previewedEnemy != null) 
-		{ 
-			if (IsInstanceValid(_previewedEnemy)) _previewedEnemy.ClearPreview(); 
-			_previewedEnemy = null; 
+		if (_previewedEnemy != null)
+		{
+			if (GodotObject.IsInstanceValid(_previewedEnemy)) _previewedEnemy.ClearPreview();
+			_previewedEnemy = null;
 		}
 		if (_currentState != State.SelectingAttackTarget) Input.SetCustomMouseCursor(null);
+	}
+
+	private void ClearHover()
+	{
+		if (_hoveredTile != null)
+		{
+			if (_movementHighlightTiles.Contains(_hoveredTile))
+				_hoveredTile.SetHighlight(true, new Color(0.35f, 0.72f, 1.0f, 0.28f));
+			else
+				_hoveredTile.SetHighlight(false);
+			_hoveredTile = null;
+		}
+	}
+
+	private void ShowMovementRange(Unit u)
+	{
+		ClearMovementRange();
+		if (u == null || u.HasMoved) return;
+		Vector2I startCoords = new Vector2I(
+			Mathf.RoundToInt(u.GlobalPosition.X / TileSize),
+			Mathf.RoundToInt(u.GlobalPosition.Z / TileSize));
+		var reachable = GetReachableTiles(startCoords, u.Data.Movement);
+		Color moveColor = new Color(0.35f, 0.72f, 1.0f, 0.28f);
+		foreach (var kvp in reachable)
+		{
+			if (kvp.Key == startCoords) continue;
+			if (_grid.TryGetValue(kvp.Key, out Tile tile))
+			{
+				tile.SetHighlight(true, moveColor);
+				_movementHighlightTiles.Add(tile);
+			}
+		}
 	}
 
 	private System.Collections.Generic.Dictionary<Vector2I, Vector2I> GetReachableTiles(Vector2I start, int maxMovement)
@@ -1797,29 +2973,23 @@ public partial class GameManager
 		var frontier = new System.Collections.Generic.Queue<Vector2I>();
 		var cameFrom = new System.Collections.Generic.Dictionary<Vector2I, Vector2I>();
 		var costSoFar = new System.Collections.Generic.Dictionary<Vector2I, int>();
-
 		frontier.Enqueue(start);
 		cameFrom[start] = start;
 		costSoFar[start] = 0;
-
 		Vector2I[] directions = {
-			new Vector2I(1, 0), new Vector2I(-1, 0), new Vector2I(0, 1), new Vector2I(0, -1),
-			new Vector2I(1, 1), new Vector2I(-1, -1), new Vector2I(1, -1), new Vector2I(-1, 1)
+			new Vector2I(1,0), new Vector2I(-1,0), new Vector2I(0,1), new Vector2I(0,-1),
+			new Vector2I(1,1), new Vector2I(-1,-1), new Vector2I(1,-1), new Vector2I(-1,1)
 		};
-
 		while (frontier.Count > 0)
 		{
 			var current = frontier.Dequeue();
-
 			foreach (var dir in directions)
 			{
 				var next = current + dir;
 				int newCost = costSoFar[current] + 1;
-
 				if (newCost > maxMovement) continue;
 				if (!_grid.ContainsKey(next)) continue;
 				if (!IsTileFree(next)) continue;
-
 				if (!costSoFar.ContainsKey(next) || newCost < costSoFar[next])
 				{
 					costSoFar[next] = newCost;
@@ -1831,7 +3001,8 @@ public partial class GameManager
 		return cameFrom;
 	}
 
-	private System.Collections.Generic.List<Vector3> ExtractPath(System.Collections.Generic.Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I end)
+	private System.Collections.Generic.List<Vector3> ExtractPath(
+		System.Collections.Generic.Dictionary<Vector2I, Vector2I> cameFrom, Vector2I start, Vector2I end)
 	{
 		var path = new System.Collections.Generic.List<Vector3>();
 		var current = end;
@@ -1841,7 +3012,7 @@ public partial class GameManager
 			path.Add(new Vector3(current.X * TileSize, height, current.Y * TileSize));
 			current = cameFrom[current];
 		}
-		path.Reverse(); 
+		path.Reverse();
 		return path;
 	}
 }
@@ -2595,8 +3766,15 @@ public partial class GameManager
 		try { await ActiveLevelUpTcs.Task; } catch { /* Ignore task cancellation safely */ } 
 	}
 
-	public async Task RollForLoot() { if (GD.Randf() > 0.8f) return; var items = ItemDatabase.Values.ToList(); await ShowLootScreen(items[GD.RandRange(0, items.Count - 1)].Clone()); }
-
+	public async Task RollForLoot() 
+	{ 
+		if (GD.Randf() > 0.8f) return; 
+		
+		// === THE FIX: Use GameDatabase.Items ===
+		var items = GameDatabase.Items.Values.ToList(); 
+		await ShowLootScreen(items[GD.RandRange(0, items.Count - 1)].Clone()); 
+	}
+	
 	public async Task ShowLootScreen(Equipment item)
 	{
 		_lootScreenActive = true; ShowActions(false);
@@ -3073,6 +4251,47 @@ public partial class GameManager
 			};
 		};
 	}
+	
+	private void ShowCardRankUpNotification(PersistentUnit unit, CardRank newRank)
+	{
+		string suitSymbol = unit.CardSuit switch
+		{
+			CardSuit.Hearts   => "♥",
+			CardSuit.Diamonds => "♦",
+			CardSuit.Clubs    => "♣",
+			CardSuit.Spades   => "♠",
+			_                 => "?"
+		};
+		Color suitColor = (unit.CardSuit == CardSuit.Hearts || unit.CardSuit == CardSuit.Diamonds)
+			? new Color(0.9f, 0.2f, 0.2f) : new Color(0.8f, 0.8f, 0.8f);
+
+		Label label = new Label
+		{
+			Text = $"BOND RANK UP!\n{unit.Profile.Name}: {suitSymbol} {newRank.DisplayName()}",
+			HorizontalAlignment = HorizontalAlignment.Center
+		};
+		label.AddThemeFontSizeOverride("font_size", 48);
+		label.AddThemeColorOverride("font_color", suitColor);
+		label.AddThemeColorOverride("font_outline_color", Colors.Black);
+		label.AddThemeConstantOverride("outline_size", 14);
+		if (_fantasyFont != null) label.AddThemeFontOverride("font", _fantasyFont);
+		label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(label);
+		else AddChild(label);
+
+		label.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
+		label.Scale = Vector2.Zero;
+		label.Modulate = new Color(1, 1, 1, 0);
+
+		Tween t = CreateTween();
+		t.Parallel().TweenProperty(label, "scale", Vector2.One, 0.4f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.Parallel().TweenProperty(label, "modulate:a", 1.0f, 0.3f);
+		t.Chain().TweenInterval(1.5f);
+		t.Chain().TweenProperty(label, "modulate:a", 0.0f, 0.4f);
+		t.Finished += () => label.QueueFree();
+	}
 }
 
 
@@ -3139,11 +4358,9 @@ public partial class GameManager : Node3D
 	private TextureRect _activeDialogueBackground;
 
 	// === GAME DATA ===
-	private System.Collections.Generic.Dictionary<string, UnitProfile> _unitDatabase = new();
 	public List<CampConversation> CampConversationsPool = new();
 	private List<PersistentUnit> _party = new(); 
 	public List<GameItem> Inventory = new();
-	public System.Collections.Generic.Dictionary<string, Equipment> ItemDatabase = new();
 	private PersistentUnit _viewedPartyMember;
 	private VBoxContainer _rightMenuPanel; 
 
@@ -3163,16 +4380,10 @@ public partial class GameManager : Node3D
 		if (Cam != null) _initialCamPos = Cam.GlobalPosition;
 
 		CallDeferred(MethodName.SetupUnifiedUI);
-
-		_unitDatabase["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right);
-		_unitDatabase["Dougal"] = new UnitProfile("Dougal", "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right);
-		_unitDatabase["Guard"] = new UnitProfile("Goblin", "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right);
-		_unitDatabase["Orc"]   = new UnitProfile("Ogre", "res://assets/HR_ORC2.png", 25, 8, 1, 2, 120, UnitFacing.Center);
-
-		ItemDatabase["IronSword"] = new Equipment("IronSword", "Iron Sword", "res://icons/sword.png", EquipSlot.Weapon, bonusDmg: 1);
-		ItemDatabase["FineHelmet"] = new Equipment("FineHelmet", "Fine Helmet", "res://icons/helmet.png", EquipSlot.Armor, bonusHp: 3);
-
+		GameDatabase.Initialize();
 		GenerateGrid();
+		_comboVisualizer = new ComboVisualizer();
+		AddChild(_comboVisualizer);
 		AttackButton.Pressed += OnAttackButtonPressed;
 		EndTurnButton.Pressed += OnEndTurnPressed; 
 		if (PartyButton != null) PartyButton.Pressed += TogglePartyMenu;
@@ -3219,7 +4430,12 @@ public partial class GameManager : Node3D
 	public override void _ExitTree()
 	{
 		if (Instance == this) Instance = null;
-
+		
+		if (_comboVisualizer != null && GodotObject.IsInstanceValid(_comboVisualizer))
+		{
+			_comboVisualizer.ClearVisuals();			
+		}
+		
 		// === THE FIX: Cancel hanging UI Tasks so the C# state machine can die ===
 		ActiveLevelUpTcs?.TrySetCanceled();
 		ActiveLootTcs?.TrySetCanceled();
@@ -3329,7 +4545,7 @@ public partial class GameManager : Node3D
 
 		if (currentEvent.Type == EventType.AddPartyMember)
 		{
-			_party.Add(new PersistentUnit(_unitDatabase[currentEvent.ProfileId], currentEvent.IsPlayer));
+			_party.Add(new PersistentUnit(GameDatabase.Units[currentEvent.ProfileId], currentEvent.IsPlayer));
 			AdvanceScript();
 		}
 		else if (currentEvent.Type == EventType.JumpToSection)
@@ -3425,10 +4641,27 @@ public partial class GameManager : Node3D
 		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
 		if (companion != null && companion.Relationships.ContainsKey(relType))
 		{
-			// === THE JUICE FIX 2: Capture old value and pass to UI! ===
 			int oldVal = companion.Relationships[relType];
 			int newVal = Mathf.Clamp(oldVal + amount, 0, 100);
 			companion.Relationships[relType] = newVal;
+
+			// === CARD RANK UP: When Respect hits a threshold, advance the card! ===
+			// (Only track "Respect" for card rank for now; you can expand this.)
+			if (relType == "Respect")
+			{
+				// Thresholds: 60, 70, 80, 85, 90, 95, 100 → each triggers a rank-up
+				int[] thresholds = { 60, 70, 80, 85, 90, 95, 100 };
+				bool crossedThreshold = false;
+				foreach (int t in thresholds)
+				{
+					if (oldVal < t && newVal >= t) { crossedThreshold = true; break; }
+				}
+				if (crossedThreshold)
+				{
+					CardRank newRank = companion.AdvanceCardRank();
+					ShowCardRankUpNotification(companion, newRank);
+				}
+			}
 			
 			ShowRelationshipNotification(charName, relType, amount, oldVal, newVal);
 		}
@@ -3560,18 +4793,16 @@ public partial class GameManager : Node3D
 		if (!string.IsNullOrEmpty(evt.TimelinePath))
 		{
 			_activeMidBattleEvents.Remove(evt);
-			_isMidBattleDialogue = true; 
+			_isMidBattleDialogue = true;
 			StartDialogue(evt.TimelinePath, evt.Background);
 		}
 		else
 		{
-			_currentState = State.PlayerTurn;
-			DeselectUnit();
-			_ = ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
-			ShowActions(true);
+			// === CHANGED: use initiative instead of binary player/enemy state ===
+			_ = ProcessNextTurn();
 		}
 	}
-	
+
 	private void LoadMission(int index)
 	{
 		_currentMissionIndex = index;
@@ -3646,6 +4877,83 @@ public partial class GameManager : Node3D
 
 		return true; 
 	}
+}
+
+
+==========================================================================================
+
+
+[FILENAME: InitiativeSystem.cs]
+
+// InitiativeSystem.cs
+// Replaces the PlayerTurn/EnemyTurn two-phase system with a per-unit initiative queue.
+// Each unit acts once per round; order is determined by Speed stat.
+using Godot;
+using System.Collections.Generic;
+using System.Linq;
+
+public class InitiativeQueue
+{
+	private List<Unit> _order = new();
+	private int _currentIndex = 0;
+	public int Round { get; private set; } = 1;
+
+	// Called at the start of each battle or when units die/spawn
+	public void Rebuild(IEnumerable<Unit> allUnits)
+	{
+		_order = allUnits
+			.Where(u => GodotObject.IsInstanceValid(u))
+			.OrderByDescending(u => u.Data.Speed)
+			.ThenBy(u => u.IsFriendly ? 0 : 1) // Friendly breaks ties first
+			.ToList();
+		_currentIndex = 0;
+	}
+
+	public Unit Current => (_order.Count > 0 && _currentIndex < _order.Count)
+		? _order[_currentIndex] : null;
+
+	/// <summary>Advance to the next unit. Wraps to new round. Returns new current unit.</summary>
+	public Unit Advance()
+	{
+		// Remove dead units
+		_order.RemoveAll(u => !GodotObject.IsInstanceValid(u));
+
+		if (_order.Count == 0) return null;
+
+		_currentIndex++;
+		if (_currentIndex >= _order.Count)
+		{
+			_currentIndex = 0;
+			Round++;
+		}
+		return Current;
+	}
+
+	/// <summary>Remove a unit (on death) without disturbing the queue order.</summary>
+	public void Remove(Unit u)
+	{
+		int idx = _order.IndexOf(u);
+		if (idx < 0) return;
+		_order.RemoveAt(idx);
+		if (idx < _currentIndex) _currentIndex--;
+		_currentIndex = Mathf.Max(0, _currentIndex);
+	}
+
+	public List<Unit> PeekNext(int count)
+	{
+		var result = new List<Unit>();
+		int i = _currentIndex;
+		while (result.Count < count)
+		{
+			i = (i + 1) % Mathf.Max(1, _order.Count);
+			if (_order.Count == 0) break;
+			result.Add(_order[i]);
+			if (result.Count >= _order.Count) break;
+		}
+		return result;
+	}
+
+	public List<Unit> AllInOrder() => new List<Unit>(_order);
 }
 
 
@@ -4003,8 +5311,8 @@ public class DialogueChoice
 
 public class DialogueStep 
 {
-	public string Action { get; set; } // Can now be "If", "ElseIf", "Else", or "SetFlag"
-	public string Condition { get; set; } // NEW: e.g., "Flag:TookTheGold" or "Rel:Ambrose:Trust > 50"
+	public string Action { get; set; }
+	public string Condition { get; set; }
 	public string Character { get; set; }
 	public string Position { get; set; }
 	public string Facing { get; set; }
@@ -4013,7 +5321,7 @@ public class DialogueStep
 	public string Emotion { get; set; }
 	public string Value { get; set; } 
 	public System.Collections.Generic.List<DialogueChoice> Choices { get; set; }
-	public System.Collections.Generic.List<DialogueStep> Steps { get; set; } // NEW: Holds the steps inside an If/Else block
+	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
 }
 
 public class CampConversation
@@ -4022,11 +5330,7 @@ public class CampConversation
 	public string TimelineName { get; set; }
 	public int Priority { get; set; }
 	public System.Collections.Generic.List<DialogueStep> Steps { get; set; }
-	
-	// e.g. "Rel:Ambrose:Respect > 50" or "Flag:SavedTheVillage"
 	public string Condition { get; set; } 
-	
-	// If true, we automatically set a flag when played so it doesn't repeat forever
 	public bool PlayOnce { get; set; } = true; 
 }
 
@@ -4641,3 +5945,5 @@ public partial class Unit : Node3D
 
 
 ==========================================================================================
+
+

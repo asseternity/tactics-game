@@ -13,16 +13,24 @@ public struct UnitProfile
 	public string SpritePath;
 	public int MaxHP;
 	public int AttackDamage;
-	public int AttackRange; 
+	public int AttackRange;
 	public int Movement;
 	public int XPReward;
 	public UnitFacing DefaultFacing;
+	public int Speed;
+	public CardSuit CardSuit;
 
-	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg, int attackRange, int movement, int xpReward, UnitFacing defaultFacing = UnitFacing.Center)
+	public UnitProfile(string name, string spritePath, int maxHp, int attackDmg,
+					   int attackRange, int movement, int xpReward,
+					   UnitFacing defaultFacing = UnitFacing.Center,
+					   int speed = 5,
+					   CardSuit cardSuit = CardSuit.Spades)
 	{
-		Name = name; SpritePath = spritePath; MaxHP = maxHp; 
-		AttackDamage = attackDmg; AttackRange = attackRange; Movement = movement; XPReward = xpReward;
+		Name = name; SpritePath = spritePath; MaxHP = maxHp;
+		AttackDamage = attackDmg; AttackRange = attackRange;
+		Movement = movement; XPReward = xpReward;
 		DefaultFacing = defaultFacing;
+		Speed = speed; CardSuit = cardSuit;
 	}
 }
 
@@ -32,13 +40,18 @@ public class PersistentUnit
 	public int Level = 1;
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
-	
+
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
 	public int AttackRange;
 	public int Movement;
-	public int XPReward; 
+	public int XPReward;
+
+	// === CARD SYSTEM ===
+	public CardRank CardRank = CardRank.None;
+	public CardSuit CardSuit => Profile.CardSuit;
+	public int Speed => Profile.Speed;
 
 	public bool IsPlayerCharacter = false;
 	public Dictionary<string, int> Relationships = new();
@@ -46,9 +59,9 @@ public class PersistentUnit
 	public Equipment EquippedWeapon;
 	public Equipment EquippedArmor;
 
-	public int GetTotalMaxHP() => MaxHP + (EquippedWeapon?.BonusMaxHP ?? 0) + (EquippedArmor?.BonusMaxHP ?? 0);
-	public int GetTotalDamage() => AttackDamage + (EquippedWeapon?.BonusDamage ?? 0) + (EquippedArmor?.BonusDamage ?? 0);
-	public int GetTotalMovement() => Movement + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
+	public int GetTotalMaxHP()     => MaxHP     + (EquippedWeapon?.BonusMaxHP   ?? 0) + (EquippedArmor?.BonusMaxHP   ?? 0);
+	public int GetTotalDamage()    => AttackDamage + (EquippedWeapon?.BonusDamage  ?? 0) + (EquippedArmor?.BonusDamage  ?? 0);
+	public int GetTotalMovement()  => Movement  + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
 
 	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
@@ -72,8 +85,18 @@ public class PersistentUnit
 	public void HealBetweenBattles()
 	{
 		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
-		if (CurrentHP <= 0) CurrentHP = 1; 
+		if (CurrentHP <= 0) CurrentHP = 1;
 		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
+	}
+
+	// === RELATIONSHIP → CARD RANK ===
+	/// <summary>
+	/// When a relationship action rewards a card rank-up, call this.
+	/// </summary>
+	public CardRank AdvanceCardRank()
+	{
+		CardRank = CardRank.NextRank();
+		return CardRank;
 	}
 }
 
@@ -143,16 +166,23 @@ public class Equipment : GameItem
 	public int BonusMaxHP;
 	public int BonusDamage;
 	public int BonusMovement;
-	
-	public Equipment(string id, string name, string iconPath, EquipSlot slot, int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0)
+
+	// === JOKER SYSTEM ===
+	public JokerEffect JokerEffects = JokerEffect.None;
+
+	public Equipment(string id, string name, string iconPath, EquipSlot slot,
+					 int bonusHp = 0, int bonusDmg = 0, int bonusMov = 0,
+					 JokerEffect jokerEffects = JokerEffect.None)
 	{
 		Id = id; Name = name; IconPath = iconPath; Slot = slot;
 		BonusMaxHP = bonusHp; BonusDamage = bonusDmg; BonusMovement = bonusMov;
-		
+		JokerEffects = jokerEffects;
+
 		List<string> stats = new();
-		if (BonusDamage > 0) stats.Add($"+{BonusDamage} DMG");
-		if (BonusMaxHP > 0) stats.Add($"+{BonusMaxHP} HP");
-		if (BonusMovement > 0) stats.Add($"+{BonusMovement} Move");
+		if (BonusDamage > 0)    stats.Add($"+{BonusDamage} DMG");
+		if (BonusMaxHP > 0)     stats.Add($"+{BonusMaxHP} HP");
+		if (BonusMovement > 0)  stats.Add($"+{BonusMovement} Move");
+		if (JokerEffects != JokerEffect.None) stats.Add($"Joker: {JokerEffects}");
 		Description = string.Join(" | ", stats);
 	}
 

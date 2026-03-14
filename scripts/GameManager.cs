@@ -80,6 +80,8 @@ public partial class GameManager : Node3D
 		CallDeferred(MethodName.SetupUnifiedUI);
 		GameDatabase.Initialize();
 		GenerateGrid();
+		_comboVisualizer = new ComboVisualizer();
+		AddChild(_comboVisualizer);
 		AttackButton.Pressed += OnAttackButtonPressed;
 		EndTurnButton.Pressed += OnEndTurnPressed; 
 		if (PartyButton != null) PartyButton.Pressed += TogglePartyMenu;
@@ -126,7 +128,12 @@ public partial class GameManager : Node3D
 	public override void _ExitTree()
 	{
 		if (Instance == this) Instance = null;
-
+		
+		if (_comboVisualizer != null && GodotObject.IsInstanceValid(_comboVisualizer))
+		{
+			_comboVisualizer.ClearVisuals();			
+		}
+		
 		// === THE FIX: Cancel hanging UI Tasks so the C# state machine can die ===
 		ActiveLevelUpTcs?.TrySetCanceled();
 		ActiveLootTcs?.TrySetCanceled();
@@ -332,10 +339,27 @@ public partial class GameManager : Node3D
 		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
 		if (companion != null && companion.Relationships.ContainsKey(relType))
 		{
-			// === THE JUICE FIX 2: Capture old value and pass to UI! ===
 			int oldVal = companion.Relationships[relType];
 			int newVal = Mathf.Clamp(oldVal + amount, 0, 100);
 			companion.Relationships[relType] = newVal;
+
+			// === CARD RANK UP: When Respect hits a threshold, advance the card! ===
+			// (Only track "Respect" for card rank for now; you can expand this.)
+			if (relType == "Respect")
+			{
+				// Thresholds: 60, 70, 80, 85, 90, 95, 100 → each triggers a rank-up
+				int[] thresholds = { 60, 70, 80, 85, 90, 95, 100 };
+				bool crossedThreshold = false;
+				foreach (int t in thresholds)
+				{
+					if (oldVal < t && newVal >= t) { crossedThreshold = true; break; }
+				}
+				if (crossedThreshold)
+				{
+					CardRank newRank = companion.AdvanceCardRank();
+					ShowCardRankUpNotification(companion, newRank);
+				}
+			}
 			
 			ShowRelationshipNotification(charName, relType, amount, oldVal, newVal);
 		}
@@ -467,18 +491,16 @@ public partial class GameManager : Node3D
 		if (!string.IsNullOrEmpty(evt.TimelinePath))
 		{
 			_activeMidBattleEvents.Remove(evt);
-			_isMidBattleDialogue = true; 
+			_isMidBattleDialogue = true;
 			StartDialogue(evt.TimelinePath, evt.Background);
 		}
 		else
 		{
-			_currentState = State.PlayerTurn;
-			DeselectUnit();
-			_ = ShowTurnAnnouncer("YOUR TURN", new Color(0.2f, 0.8f, 1.0f));
-			ShowActions(true);
+			// === CHANGED: use initiative instead of binary player/enemy state ===
+			_ = ProcessNextTurn();
 		}
 	}
-	
+
 	private void LoadMission(int index)
 	{
 		_currentMissionIndex = index;
