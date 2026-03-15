@@ -74,6 +74,13 @@ public class PersistentUnit
 		XPReward = profile.XPReward;
 		IsPlayerCharacter = isPlayer;
 
+		// === FIX: All units start with a base card rank (Two) ===
+		// Without this, CardRank stays None and no cards ever enter the pool,
+		// making the entire poker/combo system invisible to the player.
+		// Player characters always have at least Two.
+		// Companions also start at Two; relationship rank-ups advance them further.
+		CardRank = CardRank.Two;
+
 		if (!IsPlayerCharacter)
 		{
 			Relationships.Add("Respect", 50);

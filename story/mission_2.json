@@ -8,10 +8,8 @@
 		  "Light": "Indoors",
 		  "ElevationEnabled": true,
 		  "Enemies": [
-			"Orc",
-			"Orc",
-			"Guard",
-            "Guard"
+			"Orc", "Orc", "Orc", "Orc",
+			"Guard", "Guard", "Guard", "Guard", "Guard"
 		  ]
 		},
 		{
@@ -19,28 +17,10 @@
 		  "TimelineName": "Mission2_TheArtifact",
 		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
-			{
-			  "Action": "Join",
-			  "Character": "Ambrose",
-			  "Position": "Left",
-			  "Facing": "Right"
-			},
-			{
-			  "Action": "Join",
-			  "Character": "Dougal",
-			  "Position": "Right",
-			  "Facing": "Left"
-			},
-			{
-			  "Speaker": "Ambrose",
-			  "Text": "There it is. The Crimson Idol. It’s practically vibrating with blood magic.",
-			  "Emotion": "confusion"
-			},
-			{
-			  "Speaker": "Dougal",
-			  "Text": "That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori rituals. Our employer wants it, but I say we smash it right here.",
-			  "Emotion": "anger"
-			},
+			{ "Action": "Join", "Character": "Ambrose", "Position": "Left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "Right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "There it is. The Crimson Idol. It's practically vibrating with blood magic.", "Emotion": "confusion" },
+			{ "Speaker": "Dougal", "Text": "That thing is foul, Ambrose. It reeks of darkspawn blood and Venatori rituals. Our employer wants it, but I say we smash it right here.", "Emotion": "anger" },
 			{
 			  "Choices": [
 				{
@@ -48,41 +28,19 @@
 				  "SetFlag": "TriedToStealIdol",
 				  "Steps": [
 					{
-					  "Action": "If",
-					  "Condition": "Rel:Dougal:Agreement < 50",
+					  "Action": "If", "Condition": "Rel:Dougal:Agreement < 50",
 					  "Steps": [
-						{
-						  "Speaker": "Dougal",
-						  "Text": "Professionals?! That thing is evil! I've had enough of your 'suave' compromises!",
-						  "Emotion": "anger"
-						},
-						{
-						  "Speaker": "Ambrose",
-						  "Text": "Dougal, wait, don't swing that hammer—!",
-						  "Emotion": "fear"
-						},
-						{
-						  "Action": "SetFlag",
-						  "Value": "IdolDestroyed"
-						},
-						{
-						  "Speaker": "Dougal",
-						  "Text": "It's done. Now let's fight our way out of this Maker-forsaken city."
-						}
+						{ "Speaker": "Dougal", "Text": "Professionals?! That thing is evil! I've had enough of your 'suave' compromises!", "Emotion": "anger" },
+						{ "Speaker": "Ambrose", "Text": "Dougal, wait, don't swing that hammer—!", "Emotion": "fear" },
+						{ "Action": "SetFlag", "Value": "IdolDestroyed" },
+						{ "Speaker": "Dougal", "Text": "It's done. Now let's fight our way out of this Maker-forsaken city." }
 					  ]
 					},
 					{
 					  "Action": "Else",
 					  "Steps": [
-						{
-						  "Speaker": "Dougal",
-						  "Text": "Fine. But you're carrying it. If my skin starts boiling, I'm dropping it in the harbor.",
-						  "Emotion": "sadness"
-						},
-						{
-						  "Action": "SetFlag",
-						  "Value": "IdolSecured"
-						}
+						{ "Speaker": "Dougal", "Text": "Fine. But you're carrying it. If my skin starts boiling, I'm dropping it in the harbor.", "Emotion": "sadness" },
+						{ "Action": "SetFlag", "Value": "IdolSecured" }
 					  ]
 					}
 				  ]
@@ -91,70 +49,31 @@
 				  "Text": "You're right. No amount of gold is worth unleashing this into the world. Smash it.",
 				  "SetFlag": "IdolDestroyed",
 				  "Steps": [
-					{
-					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Respect:30"
-					},
-					{
-					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Agreement:30"
-					},
-					{
-					  "Speaker": "Dougal",
-					  "Text": "Glad to see there's a conscience under that silk shirt, Ambrose.",
-					  "Emotion": "bravery"
-					},
-					{
-					  "Speaker": "Ambrose",
-					  "Text": "Don't get used to it. I'm going to complain about the lost payday for a month."
-					}
+					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:30" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:30" },
+					{ "Speaker": "Dougal", "Text": "Glad to see there's a conscience under that silk shirt, Ambrose.", "Emotion": "bravery" },
+					{ "Speaker": "Ambrose", "Text": "Don't get used to it. I'm going to complain about the lost payday for a month." }
 				  ]
 				}
 			  ]
 			},
 			{
-			  "Action": "If",
-			  "Condition": "Flag:AssaultedVault",
+			  "Action": "If", "Condition": "Flag:AssaultedVault",
 			  "Steps": [
-				{
-				  "Action": "Join",
-				  "Character": "Guard",
-				  "Position": "Center",
-				  "Facing": "Left"
-				},
-				{
-				  "Speaker": "Guard",
-				  "Text": "They're in the vault! Lock down the estate! No one gets out alive!",
-				  "Emotion": "anger"
-				},
-				{
-				  "Action": "Leave",
-				  "Character": "Guard"
-				},
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "Ah. It seems kicking down the front door has finally caught up with us. Weapons ready!"
-				}
+				{ "Action": "Join", "Character": "Guard", "Position": "Center", "Facing": "Left" },
+				{ "Speaker": "Guard", "Text": "They're in the vault! Lock down the estate! No one gets out alive!", "Emotion": "anger" },
+				{ "Action": "Leave", "Character": "Guard" },
+				{ "Speaker": "Ambrose", "Text": "Ah. It seems kicking down the front door has finally caught up with us. Weapons ready!" }
 			  ]
 			},
 			{
 			  "Action": "Else",
 			  "Steps": [
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "The guards still think we're auditors. If we walk out calmly, we'll be halfway to Kirkwall before they realize it's gone.",
-				  "Emotion": "bravery"
-				},
-				{
-				  "Speaker": "Dougal",
-				  "Text": "For once, your silver tongue saved us a headache. Let's move."
-				}
+				{ "Speaker": "Ambrose", "Text": "The guards still think we're auditors. If we walk out calmly, we'll be halfway to Kirkwall before they realize it's gone.", "Emotion": "bravery" },
+				{ "Speaker": "Dougal", "Text": "For once, your silver tongue saved us a headache. Let's move." }
 			  ]
 			},
-			{
-			  "Action": "Signal",
-			  "Value": "JumpTo:EscapeSequence"
-			}
+			{ "Action": "Signal", "Value": "JumpTo:EscapeSequence" }
 		  ]
 		}
 	  ]
@@ -167,8 +86,8 @@
 		  "Light": "Indoors",
 		  "ElevationEnabled": false,
 		  "Enemies": [
-			"Orc",
-            "Guard"
+			"Orc", "Orc", "Orc",
+			"Guard", "Guard", "Guard", "Guard"
 		  ]
 		},
 		{
@@ -176,42 +95,19 @@
 		  "TimelineName": "Mission2_Conclusion",
 		  "Background": "res://assets/background1.jpg",
 		  "Steps": [
+			{ "Action": "Join", "Character": "Ambrose", "Position": "Left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "Right", "Facing": "Left" },
 			{
-			  "Action": "Join",
-			  "Character": "Ambrose",
-			  "Position": "Left",
-			  "Facing": "Right"
-			},
-			{
-			  "Action": "Join",
-			  "Character": "Dougal",
-			  "Position": "Right",
-			  "Facing": "Left"
-			},
-			{
-			  "Action": "If",
-			  "Condition": "Flag:IdolSecured",
+			  "Action": "If", "Condition": "Flag:IdolSecured",
 			  "Steps": [
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "We did it. The idol is secure, and we are wealthy beyond measure. First round at the Hanged Man is on me.",
-				  "Emotion": "bravery"
-				}
+				{ "Speaker": "Ambrose", "Text": "We did it. The idol is secure, and we are wealthy beyond measure. First round at the Hanged Man is on me.", "Emotion": "bravery" }
 			  ]
 			},
 			{
 			  "Action": "Else",
 			  "Steps": [
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "Well, our employer is going to be furious that we smashed his prize. I suggest we lay low... permanently.",
-				  "Emotion": "sadness"
-				},
-				{
-				  "Speaker": "Dougal",
-				  "Text": "We did the right thing, Ambrose. Someday, you'll realize that pays better than gold.",
-				  "Emotion": "bravery"
-				}
+				{ "Speaker": "Ambrose", "Text": "Well, our employer is going to be furious that we smashed his prize. I suggest we lay low... permanently.", "Emotion": "sadness" },
+				{ "Speaker": "Dougal", "Text": "We did the right thing, Ambrose. Someday, you'll realize that pays better than gold.", "Emotion": "bravery" }
 			  ]
 			}
 		  ]

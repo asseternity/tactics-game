@@ -30,7 +30,7 @@ public partial class GameManager
 			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
 
 		// 1. Wait for units/obstacles to shrink away
-		await ClearBoardAsync();
+		await ClearEnvironmentSceneryAsync();
 
 		// --- RESTORED CODE: Everything below this line is back! ---
 		

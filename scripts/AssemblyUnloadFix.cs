@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text.Json;
 
+#pragma warning disable CA2255 // Suppress module initializer warning
+
 /// <summary>
 /// Registers cleanup so Godot can unload C# assemblies when stopping Play or rebuilding.
 /// Prevents "Failed to unload assemblies" / "Giving up on assembly reloading" (see

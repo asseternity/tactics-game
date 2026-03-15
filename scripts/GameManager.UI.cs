@@ -1,3 +1,4 @@
+// GameManager.UI.cs — Stats panel overhaul: portrait, HP bar, glowing orbs
 using Godot;
 using System.Collections.Generic;
 using System.Linq;
@@ -5,6 +6,17 @@ using System.Threading.Tasks;
 
 public partial class GameManager
 {
+	// === STATS PANEL (replaces text-only StatsLabel for unit display) ===
+	private PanelContainer _statsPanel;
+	private TextureRect _statsPortrait;
+	private Label _statsName;
+	private ProgressBar _statsHpBar;
+	private Label _statsHpLabel;
+	private PanelContainer _statsMoveOrb;
+	private PanelContainer _statsAttackOrb;
+	private Label _statsMoveLabel;
+	private Label _statsAttackLabel;
+
 	private void SetupUnifiedUI()
 	{
 		StyleBoxFlat baseStyle = new StyleBoxFlat {
@@ -18,8 +30,8 @@ public partial class GameManager
 		BaseUIStyle = baseStyle;
 
 		BadgeStyle = new StyleBoxFlat {
-			BgColor = new Color(0.6f, 0.1f, 0.1f, 0.95f), 
-			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 8, 
+			BgColor = new Color(0.6f, 0.1f, 0.1f, 0.95f),
+			CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 0, CornerRadiusBottomRight = 8,
 			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
 			BorderColor = new Color(0.9f, 0.4f, 0.4f, 1f),
 			ContentMarginLeft = 16, ContentMarginRight = 16, ContentMarginTop = 4, ContentMarginBottom = 4,
@@ -28,37 +40,31 @@ public partial class GameManager
 
 		StyleBoxFlat btnNormal = (StyleBoxFlat)baseStyle.Duplicate();
 		StyleBoxFlat btnHover = (StyleBoxFlat)baseStyle.Duplicate();
-		btnHover.BgColor = new Color(0.18f, 0.18f, 0.22f, 1f); btnHover.BorderColor = new Color(1f, 0.85f, 0.3f, 1f); 
+		btnHover.BgColor = new Color(0.18f, 0.18f, 0.22f, 1f); btnHover.BorderColor = new Color(1f, 0.85f, 0.3f, 1f);
 		btnHover.ShadowSize = 14; btnHover.ShadowOffset = new Vector2(0, 10);
 		StyleBoxFlat btnPressed = (StyleBoxFlat)baseStyle.Duplicate();
 		btnPressed.BgColor = new Color(0.04f, 0.04f, 0.04f, 1f); btnPressed.BorderColor = new Color(0.6f, 0.5f, 0.1f, 1f);
 		btnPressed.ShadowSize = 2; btnPressed.ShadowOffset = new Vector2(0, 2);
 
 		MasterTheme = new Theme();
-		_fantasyFont = GD.Load<Font>("res://fonts/yoster.ttf"); 
+		_fantasyFont = GD.Load<Font>("res://fonts/yoster.ttf");
 		if (_fantasyFont != null)
 		{
 			MasterTheme.DefaultFont = _fantasyFont;
 			MasterTheme.SetFont("normal_font", "RichTextLabel", _fantasyFont);
 			MasterTheme.SetFont("bold_font", "RichTextLabel", _fantasyFont);
 		}
-		
+
 		MasterTheme.SetStylebox("panel", "PanelContainer", baseStyle);
 		MasterTheme.SetStylebox("normal", "Button", btnNormal); MasterTheme.SetStylebox("hover", "Button", btnHover);
 		MasterTheme.SetStylebox("pressed", "Button", btnPressed); MasterTheme.SetStylebox("focus", "Button", new StyleBoxEmpty());
 		MasterTheme.SetFontSize("normal_font_size", "RichTextLabel", 26); MasterTheme.SetColor("default_color", "RichTextLabel", new Color(0.95f, 0.95f, 0.95f, 1f));
 		MasterTheme.SetFontSize("font_size", "Label", 22); MasterTheme.SetColor("font_color", "Label", new Color(0.95f, 0.95f, 0.95f, 1f));
-		
+
 		if (ActionMenu != null) ActionMenu.Theme = MasterTheme;
-		if (StatsLabel != null)
-		{
-			StatsLabel.Theme = MasterTheme;
-			StatsLabel.AddThemeStyleboxOverride("normal", baseStyle);
-			StatsLabel.AddThemeColorOverride("default_color", new Color(0.95f, 0.95f, 0.95f, 1f));
-			StatsLabel.AddThemeFontSizeOverride("normal_font_size", 24); StatsLabel.AddThemeFontSizeOverride("bold_font_size", 28); 
-			StatsLabel.BbcodeEnabled = true; StatsLabel.FitContent = true; StatsLabel.ScrollActive = false;
-			StatsLabel.CustomMinimumSize = new Vector2(350, 0); StatsLabel.ClipContents = false;
-		}
+
+		// Hide the old text-only StatsLabel — we'll use our new panel
+		if (StatsLabel != null) StatsLabel.Visible = false;
 
 		Button[] buttons = { AttackButton, EndTurnButton, PartyButton };
 		foreach (Button btn in buttons)
@@ -66,31 +72,261 @@ public partial class GameManager
 			if (btn == null) continue;
 			btn.AddThemeStyleboxOverride("normal", btnNormal); btn.AddThemeStyleboxOverride("hover", btnHover);
 			btn.AddThemeStyleboxOverride("pressed", btnPressed); btn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
-			btn.AddThemeFontSizeOverride("font_size", 24); 
+			btn.AddThemeFontSizeOverride("font_size", 24);
 			AddButtonJuice(btn);
 		}
-		
+
 		ItemSlotStyle = new StyleBoxFlat { BgColor = new Color(0.12f, 0.12f, 0.15f, 0.95f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2, BorderColor = new Color(0.25f, 0.25f, 0.3f, 1f) };
 		ItemSlotHoverStyle = (StyleBoxFlat)ItemSlotStyle.Duplicate(); ItemSlotHoverStyle.BgColor = new Color(0.2f, 0.2f, 0.25f, 1f); ItemSlotHoverStyle.BorderColor = new Color(1f, 0.85f, 0.3f, 1f);
+
+		// Build new stats panel
+		BuildStatsPanel();
 	}
+
+	// ============================================================
+	// STATS PANEL — Modern RPG style with portrait, HP bar, orbs
+	// ============================================================
+
+	private void BuildStatsPanel()
+	{
+		_statsPanel = new PanelContainer { CustomMinimumSize = new Vector2(360, 0) };
+		_statsPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+		{
+			BgColor = new Color(0.06f, 0.06f, 0.08f, 0.95f),
+			CornerRadiusTopLeft = 14, CornerRadiusTopRight = 14, CornerRadiusBottomLeft = 14, CornerRadiusBottomRight = 14,
+			BorderWidthBottom = 3, BorderWidthTop = 3, BorderWidthLeft = 3, BorderWidthRight = 3,
+			BorderColor = new Color(0.35f, 0.35f, 0.4f),
+			ShadowSize = 10, ShadowColor = new Color(0, 0, 0, 0.6f), ShadowOffset = new Vector2(0, 5),
+			ContentMarginLeft = 12, ContentMarginRight = 12, ContentMarginTop = 10, ContentMarginBottom = 10
+		});
+
+		if (MasterTheme != null) _statsPanel.Theme = MasterTheme;
+
+		// Layout: [Portrait | Info Column]
+		HBoxContainer mainRow = new HBoxContainer();
+		mainRow.AddThemeConstantOverride("separation", 12);
+		_statsPanel.AddChild(mainRow);
+
+		// Portrait
+		_statsPortrait = new TextureRect
+		{
+			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+			StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+			CustomMinimumSize = new Vector2(70, 80),
+			SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+		};
+		mainRow.AddChild(_statsPortrait);
+
+		// Info column
+		VBoxContainer infoCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+		infoCol.AddThemeConstantOverride("separation", 6);
+		mainRow.AddChild(infoCol);
+
+		// Name + Level row
+		_statsName = new Label { Text = "—", HorizontalAlignment = HorizontalAlignment.Left };
+		_statsName.AddThemeFontSizeOverride("font_size", 22);
+		_statsName.AddThemeColorOverride("font_outline_color", Colors.Black);
+		_statsName.AddThemeConstantOverride("outline_size", 4);
+		if (_fantasyFont != null) _statsName.AddThemeFontOverride("font", _fantasyFont);
+		infoCol.AddChild(_statsName);
+
+		// HP Bar
+		MarginContainer hpMargin = new MarginContainer { CustomMinimumSize = new Vector2(0, 28) };
+		_statsHpBar = new ProgressBar { CustomMinimumSize = new Vector2(0, 28), ShowPercentage = false, MaxValue = 100, Value = 100 };
+		_statsHpBar.AddThemeStyleboxOverride("background", new StyleBoxFlat
+		{
+			BgColor = new Color(0.15f, 0.05f, 0.05f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
+			CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
+			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+			BorderColor = new Color(0.3f, 0.1f, 0.1f)
+		});
+		_statsHpBar.AddThemeStyleboxOverride("fill", new StyleBoxFlat
+		{
+			BgColor = new Color(0.2f, 0.85f, 0.3f), CornerRadiusTopLeft = 4, CornerRadiusTopRight = 4,
+			CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4
+		});
+
+		_statsHpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+		_statsHpLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_statsHpLabel.AddThemeFontSizeOverride("font_size", 15);
+		_statsHpLabel.AddThemeConstantOverride("outline_size", 4);
+		_statsHpLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		if (_fantasyFont != null) _statsHpLabel.AddThemeFontOverride("font", _fantasyFont);
+		_statsHpBar.AddChild(_statsHpLabel);
+
+		hpMargin.AddChild(_statsHpBar);
+		infoCol.AddChild(hpMargin);
+
+		// Action orbs row: [Move Orb] [Attack Orb]
+		HBoxContainer orbRow = new HBoxContainer();
+		orbRow.AddThemeConstantOverride("separation", 16);
+		infoCol.AddChild(orbRow);
+
+		// Move orb
+		VBoxContainer moveCol = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		moveCol.AddThemeConstantOverride("separation", 2);
+		_statsMoveOrb = CreateOrbIndicator(new Color(0.2f, 0.8f, 1.0f));
+		_statsMoveLabel = new Label { Text = "MOVE", HorizontalAlignment = HorizontalAlignment.Center };
+		_statsMoveLabel.AddThemeFontSizeOverride("font_size", 11);
+		_statsMoveLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		_statsMoveLabel.AddThemeConstantOverride("outline_size", 3);
+		if (_fantasyFont != null) _statsMoveLabel.AddThemeFontOverride("font", _fantasyFont);
+		moveCol.AddChild(_statsMoveOrb);
+		moveCol.AddChild(_statsMoveLabel);
+		orbRow.AddChild(moveCol);
+
+		// Attack orb
+		VBoxContainer atkCol = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		atkCol.AddThemeConstantOverride("separation", 2);
+		_statsAttackOrb = CreateOrbIndicator(new Color(1.0f, 0.5f, 0.2f));
+		_statsAttackLabel = new Label { Text = "ATTACK", HorizontalAlignment = HorizontalAlignment.Center };
+		_statsAttackLabel.AddThemeFontSizeOverride("font_size", 11);
+		_statsAttackLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		_statsAttackLabel.AddThemeConstantOverride("outline_size", 3);
+		if (_fantasyFont != null) _statsAttackLabel.AddThemeFontOverride("font", _fantasyFont);
+		atkCol.AddChild(_statsAttackOrb);
+		atkCol.AddChild(_statsAttackLabel);
+		orbRow.AddChild(atkCol);
+
+		_statsPanel.Visible = false;
+
+		// Position it where StatsLabel was
+		if (StatsLabel != null && StatsLabel.GetParent() != null)
+		{
+			StatsLabel.GetParent().AddChild(_statsPanel);
+			_statsPanel.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
+			_statsPanel.Position = new Vector2(20, -180);
+		}
+		else
+		{
+			AddChild(_statsPanel);
+		}
+	}
+
+	private PanelContainer CreateOrbIndicator(Color litColor)
+	{
+		PanelContainer orb = new PanelContainer { CustomMinimumSize = new Vector2(32, 32) };
+		orb.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+		{
+			BgColor = litColor,
+			CornerRadiusTopLeft = 16, CornerRadiusTopRight = 16,
+			CornerRadiusBottomLeft = 16, CornerRadiusBottomRight = 16,
+			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
+			BorderColor = new Color(1f, 1f, 1f, 0.3f),
+			ShadowSize = 8,
+			ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f),
+			ShadowOffset = new Vector2(0, 2)
+		});
+		return orb;
+	}
+
+	private void SetOrbLit(PanelContainer orb, Color litColor, bool isLit)
+	{
+		StyleBoxFlat style = (StyleBoxFlat)orb.GetThemeStylebox("panel");
+		if (isLit)
+		{
+			style.BgColor = litColor;
+			style.ShadowSize = 8;
+			style.ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f);
+			style.BorderColor = new Color(1f, 1f, 1f, 0.3f);
+		}
+		else
+		{
+			style.BgColor = new Color(0.12f, 0.12f, 0.15f);
+			style.ShadowSize = 0;
+			style.BorderColor = new Color(0.2f, 0.2f, 0.25f);
+		}
+	}
+
+	// ============================================================
+	// UPDATE STATS UI — visual panel update
+	// ============================================================
 
 	private void UpdateStatsUI()
 	{
-		if (StatsLabel == null) return;
+		if (_statsPanel == null) return;
 
-		if (_selectedUnit != null && _selectedUnit.Data != null)
+		if (_selectedUnit != null && _selectedUnit.Data != null && GodotObject.IsInstanceValid(_selectedUnit))
 		{
-			string moveStr = _selectedUnit.HasMoved ? "[color=#666666]Used[/color]" : "[color=#44ff44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
-			string atkStr = _selectedUnit.HasAttacked ? "[color=#666666]Used[/color]" : "[color=#ffaa44][pulse freq=1.5 color=#ffffff40]READY[/pulse][/color]";
-			StatsLabel.Text = $"[center][b][wave amp=20 freq=3]{_selectedUnit.Data.Profile.Name}[/wave][/b]\n[color=gold]Lv.{_selectedUnit.Data.Level}[/color] | HP: [color=#ff4444]{_selectedUnit.Data.CurrentHP}[/color]/{_selectedUnit.Data.GetTotalMaxHP()}\nMove: {moveStr} | Attack: {atkStr}[/center]";
-		}
-		else StatsLabel.Text = "[center]\nSelect a Unit...[/center]";
+			_statsPanel.Visible = true;
+			var d = _selectedUnit.Data;
 
-		StatsLabel.PivotOffset = StatsLabel.Size / 2;
-		Tween popTween = CreateTween();
-		popTween.TweenProperty(StatsLabel, "scale", new Vector2(1.05f, 1.05f), 0.08f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		popTween.TweenProperty(StatsLabel, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			// Portrait
+			Texture2D tex = GD.Load<Texture2D>(d.Profile.SpritePath);
+			_statsPortrait.Texture = tex;
+
+			// Name + Level
+			string levelColor = _selectedUnit.IsFriendly ? "gold" : "#ff6666";
+			_statsName.Text = $"{d.Profile.Name}  Lv.{d.Level}";
+			_statsName.AddThemeColorOverride("font_color",
+				_selectedUnit.IsFriendly ? new Color(1f, 0.95f, 0.8f) : new Color(1f, 0.5f, 0.5f));
+
+			// HP Bar
+			int maxHp = d.GetTotalMaxHP();
+			_statsHpBar.MaxValue = maxHp;
+
+			// Animate HP bar smoothly
+			CreateTween().TweenProperty(_statsHpBar, "value", (double)d.CurrentHP, 0.2f)
+				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			_statsHpLabel.Text = $"HP  {d.CurrentHP} / {maxHp}";
+
+			// Color HP bar based on ratio
+			float ratio = maxHp > 0 ? (float)d.CurrentHP / maxHp : 0;
+			Color hpColor;
+			if (ratio > 0.6f) hpColor = new Color(0.2f, 0.85f, 0.3f);
+			else if (ratio > 0.3f) hpColor = new Color(0.9f, 0.75f, 0.15f);
+			else hpColor = new Color(0.9f, 0.2f, 0.2f);
+			((StyleBoxFlat)_statsHpBar.GetThemeStylebox("fill")).BgColor = hpColor;
+
+			// Orbs
+			if (_selectedUnit.IsFriendly)
+			{
+				SetOrbLit(_statsMoveOrb, new Color(0.2f, 0.8f, 1.0f), !_selectedUnit.HasMoved);
+				SetOrbLit(_statsAttackOrb, new Color(1.0f, 0.5f, 0.2f), !_selectedUnit.HasAttacked);
+				_statsMoveLabel.AddThemeColorOverride("font_color",
+					_selectedUnit.HasMoved ? new Color(0.3f, 0.3f, 0.35f) : new Color(0.5f, 0.9f, 1f));
+				_statsAttackLabel.AddThemeColorOverride("font_color",
+					_selectedUnit.HasAttacked ? new Color(0.3f, 0.3f, 0.35f) : new Color(1f, 0.7f, 0.4f));
+				_statsMoveOrb.Visible = true; _statsAttackOrb.Visible = true;
+				_statsMoveLabel.Visible = true; _statsAttackLabel.Visible = true;
+			}
+			else
+			{
+				// Enemy — hide orbs
+				_statsMoveOrb.Visible = false; _statsAttackOrb.Visible = false;
+				_statsMoveLabel.Visible = false; _statsAttackLabel.Visible = false;
+			}
+
+			// Juicy pop
+			_statsPanel.PivotOffset = _statsPanel.Size / 2;
+			Tween pop = CreateTween();
+			pop.TweenProperty(_statsPanel, "scale", new Vector2(1.04f, 1.04f), 0.08f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			pop.TweenProperty(_statsPanel, "scale", Vector2.One, 0.12f).SetTrans(Tween.TransitionType.Sine);
+		}
+		else
+		{
+			_statsPanel.Visible = false;
+		}
 	}
+
+	// ============================================================
+	// SHOW UNIT INFO (clickable info for non-selected units)
+	// ============================================================
+
+	private void ShowUnitInfo(Unit u)
+	{
+		if (u == null || u.Data == null) return;
+
+		// Temporarily set as selected for display, then clear
+		var prev = _selectedUnit;
+		_selectedUnit = u;
+		UpdateStatsUI();
+		_selectedUnit = prev;
+	}
+
+	// ============================================================
+	// ACTIONS UI (unchanged logic, kept)
+	// ============================================================
 
 	private void ShowActions(bool show)
 	{
@@ -146,10 +382,9 @@ public partial class GameManager
 		Input.SetCustomMouseCursor(null);
 	}
 
-	private void ShowUnitInfo(Unit u) { 
-		if (StatsLabel != null && u.Data != null) 
-			StatsLabel.Text = $"Enemy Unit\nLv.{u.Data.Level} HP: {u.Data.CurrentHP}/{u.Data.GetTotalMaxHP()}\nDmg: {u.Data.GetTotalDamage()}"; 
-	}
+	// ============================================================
+	// TURN ANNOUNCER + FLOATING TEXT (font applied)
+	// ============================================================
 
 	private async Task ShowTurnAnnouncer(string text, Color color)
 	{
@@ -157,7 +392,7 @@ public partial class GameManager
 		announcer.AddThemeFontSizeOverride("font_size", 100); announcer.AddThemeColorOverride("font_color", color);
 		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0)); announcer.AddThemeConstantOverride("outline_size", 20);
 		if (_fantasyFont != null) announcer.AddThemeFontOverride("font", _fantasyFont);
-		
+
 		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer); else AddChild(announcer);
 
@@ -187,6 +422,10 @@ public partial class GameManager
 		tween.Parallel().TweenProperty(label, "modulate:a", 0.0f, 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
 		tween.Finished += () => label.QueueFree();
 	}
+
+	// ============================================================
+	// LEVEL UP / LOOT / PARTY (preserved exactly from original)
+	// ============================================================
 
 	public async Task ShowLevelUpScreen(Unit unit)
 	{
@@ -219,17 +458,9 @@ public partial class GameManager
 			btn.Pressed += () => {
 				if (opt == "FullHeal") unit.Data.CurrentHP = unit.Data.MaxHP; else if (opt == "MaxHP") { unit.Data.MaxHP += 5; unit.Data.CurrentHP += 5; } else if (opt == "Movement") unit.Data.Movement += 1; else if (opt == "AttackDamage") unit.Data.AttackDamage += 2;
 				unit.UpdateVisuals();
-
 				Tween outTween = CreateTween();
 				outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-				outTween.Finished += () => {
-					uiRoot.QueueFree(); if (DimOverlay != null && !_dialogueActive) DimOverlay.Visible = false;
-					_levelUpActive = false; if (_currentState == State.PlayerTurn && _selectedUnit != null) ShowActions(true);
-					
-					// === THE FIX: Complete the task safely ===
-					ActiveLevelUpTcs?.TrySetResult(true);
-					ActiveLevelUpTcs = null;
-				};
+				outTween.Finished += () => { uiRoot.QueueFree(); if (DimOverlay != null && !_dialogueActive) DimOverlay.Visible = false; _levelUpActive = false; if (_currentState == State.PlayerTurn && _selectedUnit != null) ShowActions(true); ActiveLevelUpTcs?.TrySetResult(true); ActiveLevelUpTcs = null; };
 			};
 			vbox.AddChild(btn);
 		}
@@ -237,18 +468,16 @@ public partial class GameManager
 		await ToSignal(GetTree(), "process_frame");
 		panel.PivotOffset = panel.Size / 2; panel.Scale = Vector2.Zero;
 		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		try { await ActiveLevelUpTcs.Task; } catch { /* Ignore task cancellation safely */ } 
+		try { await ActiveLevelUpTcs.Task; } catch { }
 	}
 
-	public async Task RollForLoot() 
-	{ 
-		if (GD.Randf() > 0.8f) return; 
-		
-		// === THE FIX: Use GameDatabase.Items ===
-		var items = GameDatabase.Items.Values.ToList(); 
-		await ShowLootScreen(items[GD.RandRange(0, items.Count - 1)].Clone()); 
+	public async Task RollForLoot()
+	{
+		if (GD.Randf() > 0.8f) return;
+		var items = GameDatabase.Items.Values.ToList();
+		await ShowLootScreen(items[GD.RandRange(0, items.Count - 1)].Clone());
 	}
-	
+
 	public async Task ShowLootScreen(Equipment item)
 	{
 		_lootScreenActive = true; ShowActions(false);
@@ -260,7 +489,7 @@ public partial class GameManager
 
 		PanelContainer panel = new PanelContainer { Theme = MasterTheme, CustomMinimumSize = new Vector2(400, 0) }; uiRoot.AddChild(panel);
 		panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
-		panel.Position = new Vector2((GetViewport().GetVisibleRect().Size.X / 2f) - 200f, -300f); 
+		panel.Position = new Vector2((GetViewport().GetVisibleRect().Size.X / 2f) - 200f, -300f);
 
 		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 15); panel.AddChild(vbox);
 		Label title = new Label { Text = "Loot Found!", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 28); title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.2f)); vbox.AddChild(title);
@@ -275,47 +504,28 @@ public partial class GameManager
 		grabBtn.Pressed += () => {
 			Inventory.Add(item);
 			Tween outTween = CreateTween(); outTween.TweenProperty(panel, "position:y", -300f, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			outTween.Finished += () => { 
-				uiRoot.QueueFree(); if (DimOverlay != null && !_levelUpActive && !_dialogueActive) DimOverlay.Visible = false; _lootScreenActive = false; 
-				
-				// === THE FIX: Complete the task safely ===
-				ActiveLootTcs?.TrySetResult(true); 
-				ActiveLootTcs = null;
-			};
+			outTween.Finished += () => { uiRoot.QueueFree(); if (DimOverlay != null && !_levelUpActive && !_dialogueActive) DimOverlay.Visible = false; _lootScreenActive = false; ActiveLootTcs?.TrySetResult(true); ActiveLootTcs = null; };
 		};
-		try { await ActiveLootTcs.Task; } catch { /* Ignore task cancellation safely */ }
+		try { await ActiveLootTcs.Task; } catch { }
 	}
 
 	private void TogglePartyMenu()
 	{
-		// FIX 1: Allow opening during Camp state!
 		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu && _currentState != State.Camp) return;
 
 		if (_activePartyMenu != null)
 		{
 			Tween outTween = CreateTween();
 			outTween.TweenProperty(_activePartyMenu, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			outTween.Finished += () => { 
-				_activePartyMenu.QueueFree(); 
-				_activePartyMenu = null; 
-				if (DimOverlay != null) DimOverlay.Visible = false; 
-				
-				// FIX 2: Return to the correct state depending on where we opened it!
-				if (_campNodes.Count > 0) 
-				{
-					_currentState = State.Camp;
-					if (_campUIRoot != null) _campUIRoot.Visible = true;
-				}
-				else 
-				{
-					_currentState = State.PlayerTurn; 
-					ShowActions(true); 
-				}
+			outTween.Finished += () => {
+				_activePartyMenu.QueueFree(); _activePartyMenu = null;
+				if (DimOverlay != null) DimOverlay.Visible = false;
+				if (_campNodes.Count > 0) { _currentState = State.Camp; if (_campUIRoot != null) _campUIRoot.Visible = true; }
+				else { _currentState = State.PlayerTurn; ShowActions(true); }
 			};
 			return;
 		}
 
-		// FIX 3: Hide the Camp UI while the menu is open so it isn't distracting in the background
 		if (_currentState == State.Camp && _campUIRoot != null) _campUIRoot.Visible = false;
 
 		_currentState = State.PartyMenu; ShowActions(false);
@@ -324,7 +534,6 @@ public partial class GameManager
 		_activePartyMenu = new CenterContainer(); _activePartyMenu.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activePartyMenu); else AddChild(_activePartyMenu);
 
-		// --- RESTORED UI BUILDING CODE ---
 		VBoxContainer menuWrapper = new VBoxContainer(); menuWrapper.AddThemeConstantOverride("separation", 20); _activePartyMenu.AddChild(menuWrapper);
 		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 480), Theme = MasterTheme }; menuWrapper.AddChild(mainPanel);
 		HBoxContainer mainHBox = new HBoxContainer(); mainPanel.AddChild(mainHBox);
@@ -339,10 +548,7 @@ public partial class GameManager
 		_rightMenuPanel = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; mainHBox.AddChild(_rightMenuPanel);
 
 		foreach (PersistentUnit unit in _party)
-		{
-			Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) }; AddButtonJuice(btn);
-			btn.Pressed += () => RefreshPartyDetailsAndInventory(unit); rosterBox.AddChild(btn);
-		}
+		{ Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) }; AddButtonJuice(btn); btn.Pressed += () => RefreshPartyDetailsAndInventory(unit); rosterBox.AddChild(btn); }
 
 		leftCol.AddChild(new HSeparator());
 		Button closeBtn = new Button { Text = "Close Menu", CustomMinimumSize = new Vector2(0, 50) }; closeBtn.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f)); AddButtonJuice(closeBtn); closeBtn.Pressed += TogglePartyMenu; leftCol.AddChild(closeBtn);
@@ -384,17 +590,14 @@ public partial class GameManager
 		{
 			rightCol.AddChild(new HSeparator());
 			Label relTitle = new Label { Text = "Dynamics with You" }; relTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); rightCol.AddChild(relTitle);
-
 			foreach (var rel in unit.Relationships)
 			{
-				VBoxContainer barBox = new VBoxContainer();
 				Color barColor = rel.Key == "Fear" ? new Color(0.8f, 0.3f, 0.3f) : new Color(0.3f, 0.8f, 0.5f);
 				ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(0, 22), ShowPercentage = false, MaxValue = 100 };
 				bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
 				bar.AddThemeStyleboxOverride("fill", new StyleBoxFlat { BgColor = barColor, CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
-
 				Label barLabel = new Label { Text = $"  {rel.Key}: {rel.Value}%", VerticalAlignment = VerticalAlignment.Center }; barLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect); barLabel.AddThemeFontSizeOverride("font_size", 14); barLabel.AddThemeColorOverride("font_color", Color.Color8(255,255,255,220)); bar.AddChild(barLabel);
-				barBox.AddChild(bar); rightCol.AddChild(barBox); bar.Value = 0;
+				rightCol.AddChild(bar); bar.Value = 0;
 				bar.TreeEntered += () => { CreateTween().TweenProperty(bar, "value", (double)rel.Value, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
 			}
 		}
@@ -409,20 +612,15 @@ public partial class GameManager
 		Button slotBtn = new Button { CustomMinimumSize = new Vector2(80, 80), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
 		slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
 
-		if (equip != null) 
+		if (equip != null)
 		{
 			slotBtn.Icon = GD.Load<Texture2D>(equip.IconPath); slotBtn.TooltipText = $"{equip.Name}\n{equip.Description}";
-			slotBtn.Pressed += () => { 
-				if (slotType == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = null; 
-				else _viewedPartyMember.EquippedArmor = null; 
-				Inventory.Add(equip); 
-				
-				// === NEW: Force the 3D board unit and Stats UI to catch the change! ===
+			slotBtn.Pressed += () => {
+				if (slotType == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = null; else _viewedPartyMember.EquippedArmor = null;
+				Inventory.Add(equip);
 				Unit activeUnit = _units.FirstOrDefault(u => u.Data == _viewedPartyMember);
-				if (activeUnit != null) activeUnit.UpdateVisuals();
-				UpdateStatsUI();
-
-				RefreshPartyDetailsAndInventory(_viewedPartyMember); 
+				if (activeUnit != null) activeUnit.UpdateVisuals(); UpdateStatsUI();
+				RefreshPartyDetailsAndInventory(_viewedPartyMember);
 			};
 		}
 		else { slotBtn.Text = "+"; slotBtn.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.3f)); }
@@ -433,7 +631,7 @@ public partial class GameManager
 	private PanelContainer BuildInventoryUI()
 	{
 		PanelContainer invPanel = new PanelContainer { Theme = MasterTheme }; VBoxContainer invBox = new VBoxContainer(); invPanel.AddChild(invBox);
-		Label invTitle = new Label { Text = "Party Inventory (Click to Equip to Current Unit)" }; invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); invBox.AddChild(invTitle); invBox.AddChild(new HSeparator());
+		Label invTitle = new Label { Text = "Party Inventory (Click to Equip)" }; invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); invBox.AddChild(invTitle); invBox.AddChild(new HSeparator());
 
 		GridContainer grid = new GridContainer { Columns = 10 }; grid.AddThemeConstantOverride("h_separation", 10); grid.AddThemeConstantOverride("v_separation", 10); invBox.AddChild(grid);
 
@@ -441,7 +639,7 @@ public partial class GameManager
 		{
 			Button slotBtn = new Button { CustomMinimumSize = new Vector2(70, 70), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
 			slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
-			
+
 			if (i < Inventory.Count && Inventory[i] is Equipment equipItem)
 			{
 				slotBtn.Icon = GD.Load<Texture2D>(equipItem.IconPath); slotBtn.TooltipText = $"{equipItem.Name}\n{equipItem.Description}";
@@ -450,12 +648,8 @@ public partial class GameManager
 					Equipment oldItem = equipItem.Slot == EquipSlot.Weapon ? _viewedPartyMember.EquippedWeapon : _viewedPartyMember.EquippedArmor;
 					if (oldItem != null) Inventory.Add(oldItem);
 					if (equipItem.Slot == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = equipItem; else _viewedPartyMember.EquippedArmor = equipItem;
-					
-					// === NEW: Force the 3D board unit and Stats UI to catch the change! ===
 					Unit activeUnit = _units.FirstOrDefault(u => u.Data == _viewedPartyMember);
-					if (activeUnit != null) activeUnit.UpdateVisuals();
-					UpdateStatsUI();
-
+					if (activeUnit != null) activeUnit.UpdateVisuals(); UpdateStatsUI();
 					RefreshPartyDetailsAndInventory(_viewedPartyMember);
 				};
 			}
@@ -475,295 +669,109 @@ public partial class GameManager
 
 	private void ShowChoicePickedJuice()
 	{
-		// 1. Get the mouse position - this is exactly where the player just clicked the choice!
 		Vector2 clickPos = GetViewport().GetMousePosition();
-
-		// 2. Create a top-level CanvasLayer so the particles render OVER Dialogic's UI
-		CanvasLayer fxLayer = new CanvasLayer { Layer = 105 };
-		AddChild(fxLayer);
-
-		// 3. Keep a very subtle, snappy camera bump for physical weight
-		if (Cam != null)
-		{
-			Tween camTween = CreateTween();
-			if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
-			{
-				float originalSize = Cam.Size;
-				camTween.TweenProperty(Cam, "size", originalSize * 0.98f, 0.05f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
-				camTween.TweenProperty(Cam, "size", originalSize, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-			}
-			else
-			{
-				float originalFov = Cam.Fov;
-				camTween.TweenProperty(Cam, "fov", originalFov - 1.0f, 0.05f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
-				camTween.TweenProperty(Cam, "fov", originalFov, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-			}
-		}
-
-		// 4. Spawn juicy 2D particles from the click coordinate!
-		var rng = new System.Random();
-		int particleCount = 12; // Number of sparks
+		CanvasLayer fxLayer = new CanvasLayer { Layer = 105 }; AddChild(fxLayer);
+		if (Cam != null) { Tween ct = CreateTween(); if (Cam.Projection == Camera3D.ProjectionType.Orthogonal) { float os = Cam.Size; ct.TweenProperty(Cam, "size", os * 0.98f, 0.05f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out); ct.TweenProperty(Cam, "size", os, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out); } else { float of2 = Cam.Fov; ct.TweenProperty(Cam, "fov", of2 - 1f, 0.05f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out); ct.TweenProperty(Cam, "fov", of2, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out); } }
+		var rng = new System.Random(); int pc = 12;
 		Color[] colors = { new Color(1f, 0.85f, 0.2f), new Color(1f, 0.5f, 0.2f), new Color(1f, 0.95f, 0.6f) };
-
-		for (int i = 0; i < particleCount; i++)
-		{
-			Label spark = new Label
-			{
-				Text = "✦", // A nice spark/star character
-				HorizontalAlignment = HorizontalAlignment.Center,
-				VerticalAlignment = VerticalAlignment.Center
-			};
-			
-			// Randomize size and color
-			spark.AddThemeFontSizeOverride("font_size", rng.Next(24, 50));
-			spark.AddThemeColorOverride("font_color", colors[rng.Next(colors.Length)]);
-			spark.AddThemeColorOverride("font_outline_color", Colors.Black);
-			spark.AddThemeConstantOverride("outline_size", 6);
+		for (int i = 0; i < pc; i++) { Label spark = new Label { Text = "✦", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+			spark.AddThemeFontSizeOverride("font_size", rng.Next(24, 50)); spark.AddThemeColorOverride("font_color", colors[rng.Next(colors.Length)]);
+			spark.AddThemeColorOverride("font_outline_color", Colors.Black); spark.AddThemeConstantOverride("outline_size", 6);
 			if (MasterTheme != null && MasterTheme.DefaultFont != null) spark.AddThemeFontOverride("font", MasterTheme.DefaultFont);
-
-			fxLayer.AddChild(spark);
-
-			// Center the pivot so it spins and scales correctly
-			CallDeferred(MethodName.AnimateChoiceSpark, spark, clickPos, rng.NextDouble(), rng.Next(60, 160));
-		}
-
-		// Clean up the layer after the particles finish animating
+			fxLayer.AddChild(spark); CallDeferred(MethodName.AnimateChoiceSpark, spark, clickPos, rng.NextDouble(), rng.Next(60, 160)); }
 		GetTree().CreateTimer(0.8f).Timeout += () => fxLayer.QueueFree();
 	}
 
-	private void AnimateChoiceSpark(Label spark, Vector2 origin, double rngValue1, int distance)
+	private void AnimateChoiceSpark(Label spark, Vector2 origin, double rv, int dist)
 	{
-		spark.PivotOffset = spark.Size / 2f;
-		spark.Position = origin - spark.PivotOffset;
-		spark.Scale = Vector2.Zero;
-
-		// Calculate circular explosion trajectory
-		float angle = (float)(rngValue1 * Mathf.Pi * 2);
-		Vector2 targetPos = origin + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * distance - spark.PivotOffset;
-
-		Tween t = CreateTween().SetParallel(true);
-		
-		// Randomize duration slightly for organic feel
-		float duration = 0.4f + (float)(rngValue1 * 0.2f);
-
-		// Explode outward on X
-		t.TweenProperty(spark, "position:x", targetPos.X, duration).SetTrans(Tween.TransitionType.Circ).SetEase(Tween.EaseType.Out);
-		
-		// Arc upward then fall downward (simulated 2D gravity)
-		t.TweenProperty(spark, "position:y", targetPos.Y - 30f, duration * 0.3f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
-		t.TweenProperty(spark, "position:y", targetPos.Y + 60f, duration * 0.7f).SetDelay(duration * 0.3f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
-		
-		// Pop in, then shrink out to nothing
+		spark.PivotOffset = spark.Size / 2f; spark.Position = origin - spark.PivotOffset; spark.Scale = Vector2.Zero;
+		float angle = (float)(rv * Mathf.Pi * 2); Vector2 tp = origin + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * dist - spark.PivotOffset;
+		Tween t = CreateTween().SetParallel(true); float dur = 0.4f + (float)(rv * 0.2f);
+		t.TweenProperty(spark, "position:x", tp.X, dur).SetTrans(Tween.TransitionType.Circ).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(spark, "position:y", tp.Y - 30f, dur * 0.3f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(spark, "position:y", tp.Y + 60f, dur * 0.7f).SetDelay(dur * 0.3f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
 		t.TweenProperty(spark, "scale", Vector2.One, 0.1f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		t.TweenProperty(spark, "scale", Vector2.Zero, duration - 0.1f).SetDelay(0.1f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-		
-		// Wild spinning
-		t.TweenProperty(spark, "rotation", (float)(rngValue1 - 0.5f) * 6f, duration);
+		t.TweenProperty(spark, "scale", Vector2.Zero, dur - 0.1f).SetDelay(0.1f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		t.TweenProperty(spark, "rotation", (float)(rv - 0.5f) * 6f, dur);
 	}
 
 	private void ShowRelationshipNotification(string charName, string relType, int amount, int oldVal, int newVal)
 	{
-		bool isPositive = amount > 0;
-		Color themeColor = isPositive ? new Color(0.4f, 1f, 0.5f) : new Color(1f, 0.4f, 0.4f);
-		Color baseColor = new Color(0.3f, 0.6f, 0.9f); // Neutral blue before it hits its target
-
-		// Build the main panel
+		bool isPositive = amount > 0; Color themeColor = isPositive ? new Color(0.4f, 1f, 0.5f) : new Color(1f, 0.4f, 0.4f); Color baseColor = new Color(0.3f, 0.6f, 0.9f);
 		PanelContainer panel = new PanelContainer();
-		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat {
-			BgColor = new Color(0.08f, 0.08f, 0.12f, 0.95f),
-			CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12,
-			BorderWidthLeft = 4, BorderWidthRight = 4, BorderWidthTop = 4, BorderWidthBottom = 4,
-			BorderColor = new Color(0.2f, 0.2f, 0.25f), // Starts dull
-			ShadowSize = 12, ShadowColor = new Color(0, 0, 0, 0.6f), ShadowOffset = new Vector2(0, 6)
-		});
-
-		MarginContainer margin = new MarginContainer();
-		margin.AddThemeConstantOverride("margin_left", 25);
-		margin.AddThemeConstantOverride("margin_right", 25);
-		margin.AddThemeConstantOverride("margin_top", 15);
-		margin.AddThemeConstantOverride("margin_bottom", 15);
-		panel.AddChild(margin);
-
-		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-		vbox.AddThemeConstantOverride("separation", 12);
-		margin.AddChild(vbox);
-
-		// Header Label
-		Label title = new Label { Text = $"{charName} - {relType}", HorizontalAlignment = HorizontalAlignment.Center };
-		title.AddThemeFontSizeOverride("font_size", 22);
-		if (MasterTheme != null && MasterTheme.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont);
-		vbox.AddChild(title);
-
-		// The dynamic progress bar
+		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.08f, 0.08f, 0.12f, 0.95f), CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12, BorderWidthLeft = 4, BorderWidthRight = 4, BorderWidthTop = 4, BorderWidthBottom = 4, BorderColor = new Color(0.2f, 0.2f, 0.25f), ShadowSize = 12, ShadowColor = new Color(0, 0, 0, 0.6f), ShadowOffset = new Vector2(0, 6) });
+		MarginContainer margin = new MarginContainer(); margin.AddThemeConstantOverride("margin_left", 25); margin.AddThemeConstantOverride("margin_right", 25); margin.AddThemeConstantOverride("margin_top", 15); margin.AddThemeConstantOverride("margin_bottom", 15); panel.AddChild(margin);
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 12); margin.AddChild(vbox);
+		Label title = new Label { Text = $"{charName} - {relType}", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 22); if (MasterTheme?.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont); vbox.AddChild(title);
 		ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(280, 25), MaxValue = 100, Value = oldVal, ShowPercentage = false };
 		StyleBoxFlat barFill = new StyleBoxFlat { BgColor = baseColor, CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 };
-		bar.AddThemeStyleboxOverride("fill", barFill);
-		bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 });
-		vbox.AddChild(bar);
-
-		// The YAY/BOO Text (Starts hidden/tiny)
-		string effectPrefix = isPositive ? "YAY!" : "BOO!";
-		string amountStr = isPositive ? $"+{amount}" : $"{amount}";
-		Label effectLabel = new Label {
-			Text = $"{effectPrefix} {amountStr}",
-			HorizontalAlignment = HorizontalAlignment.Center,
-			Modulate = new Color(1, 1, 1, 0)
-		};
-		effectLabel.AddThemeFontSizeOverride("font_size", 26);
-		effectLabel.AddThemeColorOverride("font_color", themeColor);
-		effectLabel.AddThemeConstantOverride("outline_size", 6);
-		effectLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
-		if (MasterTheme != null && MasterTheme.DefaultFont != null) effectLabel.AddThemeFontOverride("font", MasterTheme.DefaultFont);
-		vbox.AddChild(effectLabel);
-
-		// Add to tree
+		bar.AddThemeStyleboxOverride("fill", barFill); bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 }); vbox.AddChild(bar);
+		string pfx = isPositive ? "YAY!" : "BOO!"; string amtStr = isPositive ? $"+{amount}" : $"{amount}";
+		Label effectLabel = new Label { Text = $"{pfx} {amtStr}", HorizontalAlignment = HorizontalAlignment.Center, Modulate = new Color(1, 1, 1, 0) };
+		effectLabel.AddThemeFontSizeOverride("font_size", 26); effectLabel.AddThemeColorOverride("font_color", themeColor); effectLabel.AddThemeConstantOverride("outline_size", 6); effectLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		if (MasterTheme?.DefaultFont != null) effectLabel.AddThemeFontOverride("font", MasterTheme.DefaultFont); vbox.AddChild(effectLabel);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(panel); else AddChild(panel);
-
-		// Wait a frame so Godot calculates the physical Size of the panel
 		CallDeferred(MethodName.RunRelationshipTweenSequence, panel, bar, barFill, effectLabel, themeColor, newVal);
 	}
 
 	private void RunRelationshipTweenSequence(PanelContainer panel, ProgressBar bar, StyleBoxFlat barFill, Label effectLabel, Color themeColor, int newVal)
 	{
-		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
-		
-		// Setup physical starting position (Offscreen right)
-		panel.Position = new Vector2(screenSize.X + 50f, 60f); 
-		panel.PivotOffset = panel.Size / 2f; // Center pivot for the bump later
-
+		Vector2 ss = GetViewport().GetVisibleRect().Size; panel.Position = new Vector2(ss.X + 50f, 60f); panel.PivotOffset = panel.Size / 2f;
 		Tween seq = CreateTween();
-
-		// Step 1. Fast, bouncy slide-in
-		float targetX = screenSize.X - panel.Size.X - 40f; 
-		seq.TweenProperty(panel, "position:x", targetX, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		seq.TweenProperty(panel, "position:x", ss.X - panel.Size.X - 40f, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 		seq.TweenInterval(0.3f);
-
-		// Step 2. Smoothly fill/deplete the bar
 		seq.TweenProperty(bar, "value", (double)newVal, 0.6f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
-
-		// Step 3. The "Resting" burst (Fires the moment the bar finishes sliding)
 		seq.TweenCallback(Callable.From(() => {
-			// Light up the panel borders and bar to the Yay/Boo color
-			StyleBoxFlat pStyle = (StyleBoxFlat)panel.GetThemeStylebox("panel");
-			pStyle.BorderColor = themeColor;
-			barFill.BgColor = themeColor;
-
-			// Prepare the text to pop
-			effectLabel.Modulate = new Color(1, 1, 1, 1);
-			effectLabel.Scale = new Vector2(0.01f, 0.01f);
-			effectLabel.PivotOffset = effectLabel.Size / 2f;
-
-			// Pop the text!
-			Tween pop = CreateTween();
-			pop.TweenProperty(effectLabel, "scale", new Vector2(1.3f, 1.3f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			StyleBoxFlat ps = (StyleBoxFlat)panel.GetThemeStylebox("panel"); ps.BorderColor = themeColor; barFill.BgColor = themeColor;
+			effectLabel.Modulate = new Color(1, 1, 1, 1); effectLabel.Scale = new Vector2(0.01f, 0.01f); effectLabel.PivotOffset = effectLabel.Size / 2f;
+			Tween pop = CreateTween(); pop.TweenProperty(effectLabel, "scale", new Vector2(1.3f, 1.3f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 			pop.TweenProperty(effectLabel, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-
-			// Add a physical bump to the entire panel chassis
-			Tween bump = CreateTween();
-			bump.TweenProperty(panel, "scale", new Vector2(1.08f, 1.08f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			Tween bump = CreateTween(); bump.TweenProperty(panel, "scale", new Vector2(1.08f, 1.08f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 			bump.TweenProperty(panel, "scale", Vector2.One, 0.25f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
 		}));
-
-		// Step 4. Hang out for a moment so the player can read it
 		seq.TweenInterval(1.8f);
-
-		// Step 5. Zip out of frame and delete
-		seq.TweenProperty(panel, "position:x", screenSize.X + 50f, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		seq.TweenProperty(panel, "position:x", ss.X + 50f, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
 		seq.Finished += () => panel.QueueFree();
 	}
-	
+
 	private void ShowNextMissionScreen()
 	{
-		_currentState = State.Cutscene;
-		ShowActions(false);
-		if (DimOverlay != null) DimOverlay.Visible = true;
-
-		Control uiRoot = new Control(); 
-		uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		_currentState = State.Cutscene; ShowActions(false); if (DimOverlay != null) DimOverlay.Visible = true;
+		Control uiRoot = new Control(); uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
-
-		CenterContainer center = new CenterContainer { Theme = MasterTheme }; 
-		center.SetAnchorsPreset(Control.LayoutPreset.FullRect); 
-		uiRoot.AddChild(center);
-
-		PanelContainer panel = new PanelContainer();
-		panel.AddThemeStyleboxOverride("panel", BaseUIStyle); 
-		center.AddChild(panel);
-
-		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; 
-		vbox.AddThemeConstantOverride("separation", 20); 
-		panel.AddChild(vbox);
-
-		Label title = new Label { Text = "MISSION COMPLETE", HorizontalAlignment = HorizontalAlignment.Center }; 
-		title.AddThemeFontSizeOverride("font_size", 40); 
-		title.AddThemeColorOverride("font_color", new Color(0.4f, 1f, 0.5f)); 
-		vbox.AddChild(title);
-
-		Label subtitle = new Label { Text = "The party rests and recovers some HP.", HorizontalAlignment = HorizontalAlignment.Center };
-		subtitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
-		vbox.AddChild(subtitle);
-
-		Button nextBtn = new Button { Text = "Start Next Mission", CustomMinimumSize = new Vector2(250, 60) }; 
-		AddButtonJuice(nextBtn); 
-		vbox.AddChild(nextBtn);
-
-		// Entrance Animation
-		panel.PivotOffset = new Vector2(200, 100); // Approximate center
-		panel.Scale = Vector2.Zero;
+		CenterContainer center = new CenterContainer { Theme = MasterTheme }; center.SetAnchorsPreset(Control.LayoutPreset.FullRect); uiRoot.AddChild(center);
+		PanelContainer panel = new PanelContainer(); panel.AddThemeStyleboxOverride("panel", BaseUIStyle); center.AddChild(panel);
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 20); panel.AddChild(vbox);
+		Label title = new Label { Text = "MISSION COMPLETE", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 40); title.AddThemeColorOverride("font_color", new Color(0.4f, 1f, 0.5f)); vbox.AddChild(title);
+		Label sub = new Label { Text = "The party rests and recovers some HP.", HorizontalAlignment = HorizontalAlignment.Center }; sub.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); vbox.AddChild(sub);
+		Button nextBtn = new Button { Text = "Start Next Mission", CustomMinimumSize = new Vector2(250, 60) }; AddButtonJuice(nextBtn); vbox.AddChild(nextBtn);
+		panel.PivotOffset = new Vector2(200, 100); panel.Scale = Vector2.Zero;
 		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-
-		nextBtn.Pressed += () => {
-			Tween outTween = CreateTween();
-			outTween.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			outTween.Finished += () => {
-				uiRoot.QueueFree();
-				if (DimOverlay != null) DimOverlay.Visible = false;
-				
-				// Clean up the old board and load the next JSON!
-				ClearBoard();
-				LoadMission(_currentMissionIndex + 1);
-			};
+		nextBtn.Pressed += () => { 
+			Tween ot = CreateTween(); ot.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			ot.Finished += () => { 
+				uiRoot.QueueFree(); 
+				if (DimOverlay != null) DimOverlay.Visible = false; 
+				LoadMission(_currentMissionIndex + 1); 
+			}; 
 		};
 	}
-	
+
 	private void ShowCardRankUpNotification(PersistentUnit unit, CardRank newRank)
 	{
-		string suitSymbol = unit.CardSuit switch
-		{
-			CardSuit.Hearts   => "♥",
-			CardSuit.Diamonds => "♦",
-			CardSuit.Clubs    => "♣",
-			CardSuit.Spades   => "♠",
-			_                 => "?"
-		};
-		Color suitColor = (unit.CardSuit == CardSuit.Hearts || unit.CardSuit == CardSuit.Diamonds)
-			? new Color(0.9f, 0.2f, 0.2f) : new Color(0.8f, 0.8f, 0.8f);
-
-		Label label = new Label
-		{
-			Text = $"BOND RANK UP!\n{unit.Profile.Name}: {suitSymbol} {newRank.DisplayName()}",
-			HorizontalAlignment = HorizontalAlignment.Center
-		};
-		label.AddThemeFontSizeOverride("font_size", 48);
-		label.AddThemeColorOverride("font_color", suitColor);
-		label.AddThemeColorOverride("font_outline_color", Colors.Black);
-		label.AddThemeConstantOverride("outline_size", 14);
+		string ss = CardImageHelper.GetSuitSymbol(unit.CardSuit);
+		Color sc = CardImageHelper.GetSuitColor(unit.CardSuit);
+		Label label = new Label { Text = $"BOND RANK UP!\n{unit.Profile.Name}: {ss} {newRank.DisplayName()}", HorizontalAlignment = HorizontalAlignment.Center };
+		label.AddThemeFontSizeOverride("font_size", 48); label.AddThemeColorOverride("font_color", sc);
+		label.AddThemeColorOverride("font_outline_color", Colors.Black); label.AddThemeConstantOverride("outline_size", 14);
 		if (_fantasyFont != null) label.AddThemeFontOverride("font", _fantasyFont);
 		label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-
-		if (DimOverlay != null) DimOverlay.GetParent().AddChild(label);
-		else AddChild(label);
-
-		label.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
-		label.Scale = Vector2.Zero;
-		label.Modulate = new Color(1, 1, 1, 0);
-
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(label); else AddChild(label);
+		label.PivotOffset = GetViewport().GetVisibleRect().Size / 2; label.Scale = Vector2.Zero; label.Modulate = new Color(1, 1, 1, 0);
 		Tween t = CreateTween();
-		t.Parallel().TweenProperty(label, "scale", Vector2.One, 0.4f)
-			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		t.Parallel().TweenProperty(label, "modulate:a", 1.0f, 0.3f);
-		t.Chain().TweenInterval(1.5f);
-		t.Chain().TweenProperty(label, "modulate:a", 0.0f, 0.4f);
+		t.Parallel().TweenProperty(label, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.Parallel().TweenProperty(label, "modulate:a", 1f, 0.3f);
+		t.Chain().TweenInterval(1.5f); t.Chain().TweenProperty(label, "modulate:a", 0f, 0.4f);
 		t.Finished += () => label.QueueFree();
 	}
 }

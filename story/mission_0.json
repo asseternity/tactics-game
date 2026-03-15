@@ -2,130 +2,40 @@
   "Sections": {
 	"Start": {
 	  "Events": [
+		{ "Type": "AddPartyMember", "ProfileId": "Ambrose", "IsPlayer": true },
+		{ "Type": "AddPartyMember", "ProfileId": "Dougal", "IsPlayer": false },
+		{ "Type": "AddPartyMember", "ProfileId": "Pepper", "IsPlayer": false },
+		{ "Type": "AddPartyMember", "ProfileId": "Cobalt", "IsPlayer": false },
+		{ "Type": "AddPartyMember", "ProfileId": "Moss", "IsPlayer": false },
+		{ "Type": "AddPartyMember", "ProfileId": "Ember", "IsPlayer": false },
+		{ "Type": "AddPartyMember", "ProfileId": "Sunny", "IsPlayer": false },
 		{
-		  "Type": "AddPartyMember",
-		  "ProfileId": "Ambrose",
-		  "IsPlayer": true
+		  "Type": "Battle", "Ground": "Dirt", "Light": "Morning", "ElevationEnabled": true,
+		  "Enemies": ["Guard", "Guard", "Guard", "Guard", "Orc", "Orc"]
 		},
 		{
-		  "Type": "AddPartyMember",
-		  "ProfileId": "Dougal",
-		  "IsPlayer": false
-		},
-		{
-		  "Type": "Battle",
-		  "Ground": "Marble",
-		  "Light": "Night",
-		  "ElevationEnabled": false,
-		  "Enemies": [
-			"Guard",
-            "Guard"
-		  ]
-		},
-		{
-		  "Type": "Dialogue",
-		  "TimelineName": "Mission0_Intro",
-		  "Background": "res://assets/background1.jpg",
+		  "Type": "Dialogue", "TimelineName": "Mission0_Intro", "Background": "res://assets/background1.jpg",
 		  "Steps": [
-			{
-			  "Action": "Join",
-			  "Character": "Ambrose",
-			  "Position": "Left",
-			  "Facing": "Right"
-			},
-			{
-			  "Action": "Join",
-			  "Character": "Dougal",
-			  "Position": "Right",
-			  "Facing": "Left"
-			},
-			{
-			  "Speaker": "Ambrose",
-			  "Text": "Well, that was dreadfully impolite. A Magister's dockwatch lacks all sense of Minrathous hospitality.",
-			  "Emotion": "bravery"
-			},
-			{
-			  "Speaker": "Dougal",
-			  "Text": "They're Venatori on a payroll, Ambrose. They ain't here to pour you wine.",
-			  "Emotion": "anger"
-			},
-			{
-			  "Action": "Join",
-			  "Character": "Guard",
-			  "Position": "Center",
-			  "Facing": "Left"
-			},
-			{
-			  "Speaker": "Guard",
-			  "Text": "Maker's breath... please! I yield! The Magister didn't pay us enough to die to a pair of alley rats!",
-			  "Emotion": "fear"
-			},
-			{
-			  "Choices": [
-				{
-				  "Text": "We don't leave loose ends. Finish him, Dougal.",
-				  "SetFlag": "KilledDockGuard",
-				  "Steps": [
-					{
-					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Agreement:20"
-					},
-					{
-					  "Speaker": "Dougal",
-					  "Text": "Pragmatic. I like it. No witnesses to warn the estate.",
-					  "Emotion": "bravery"
-					},
-					{
-					  "Action": "Leave",
-					  "Character": "Guard"
-					}
-				  ]
-				},
-				{
-				  "Text": "Run along, friend. And reconsider your choice of employer.",
-				  "SetFlag": "SparedDockGuard",
-				  "Steps": [
-					{
-					  "Action": "Signal",
-					  "Value": "Rel:Dougal:Agreement:-20"
-					},
-					{
-					  "Speaker": "Guard",
-					  "Text": "Thank you! Thank you! You'll never see me again!",
-					  "Emotion": "bravery"
-					},
-					{
-					  "Action": "Leave",
-					  "Character": "Guard"
-					},
-					{
-					  "Speaker": "Dougal",
-					  "Text": "You're a fool, Ambrose. A suave fool, but a fool. That rat's going to squeal.",
-					  "Emotion": "anger"
-					}
-				  ]
-				}
-			  ]
-			},
-			{
-			  "Action": "If",
-			  "Condition": "Flag:SparedDockGuard",
-			  "Steps": [
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "Relax, Dougal. A little mercy buys us good karma. Now, let's hit the Magister's vault before sunrise."
-				}
-			  ]
-			},
-			{
-			  "Action": "Else",
-			  "Steps": [
-				{
-				  "Speaker": "Ambrose",
-				  "Text": "A shame, but necessary. Now, let's relieve this Magister of his prized artifact before the sun comes up."
-				}
-			  ]
-			}
+			{ "Action": "Join", "Character": "Ambrose", "Position": "Left", "Facing": "Right" },
+			{ "Action": "Join", "Character": "Dougal", "Position": "Right", "Facing": "Left" },
+			{ "Speaker": "Ambrose", "Text": "Well, that was dreadfully impolite. A Magister's dockwatch lacks all sense of Minrathous hospitality.", "Emotion": "bravery" },
+			{ "Speaker": "Dougal", "Text": "They're Venatori on a payroll, Ambrose. They ain't here to pour you wine.", "Emotion": "anger" },
+			{ "Action": "Join", "Character": "Guard", "Position": "Center", "Facing": "Left" },
+			{ "Speaker": "Guard", "Text": "Maker's breath... please! I yield! The Magister didn't pay us enough to die to a pair of alley rats!", "Emotion": "fear" },
+			{ "Choices": [
+				{ "Text": "We don't leave loose ends. Finish him, Dougal.", "SetFlag": "KilledDockGuard", "Steps": [
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
+					{ "Speaker": "Dougal", "Text": "Pragmatic. I like it. No witnesses to warn the estate.", "Emotion": "bravery" },
+					{ "Action": "Leave", "Character": "Guard" } ] },
+				{ "Text": "Run along, friend. And reconsider your choice of employer.", "SetFlag": "SparedDockGuard", "Steps": [
+					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-20" },
+					{ "Speaker": "Guard", "Text": "Thank you! Thank you! You'll never see me again!", "Emotion": "bravery" },
+					{ "Action": "Leave", "Character": "Guard" },
+					{ "Speaker": "Dougal", "Text": "You're a fool, Ambrose. A suave fool, but a fool. That rat's going to squeal.", "Emotion": "anger" } ] } ] },
+			{ "Action": "If", "Condition": "Flag:SparedDockGuard", "Steps": [
+				{ "Speaker": "Ambrose", "Text": "Relax, Dougal. A little mercy buys us good karma. Now, let's hit the Magister's vault before sunrise." } ] },
+			{ "Action": "Else", "Steps": [
+				{ "Speaker": "Ambrose", "Text": "A shame, but necessary. Now, let's relieve this Magister of his prized artifact before the sun comes up." } ] }
 		  ]
 		}
 	  ]

@@ -75,7 +75,26 @@ public partial class GameManager : Node3D
 	public override void _Ready()
 	{
 		Instance = this; 
-		if (Cam != null) _initialCamPos = Cam.GlobalPosition;
+		if (Cam != null)
+		{
+			if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+			{
+				// === THE FIX 1: Zoom in slightly (Reduced from 40 to 34) ===
+				Cam.Size = 34f; 
+				Cam.Far = 3000f;
+				
+				// Center of 30x30 grid (TileSize 2) is (29, 0, 29)
+				Vector3 gridCenter = new Vector3(29f, 0f, 29f); 
+				
+				// Look at the center, then push backward along local Z
+				Cam.GlobalPosition = gridCenter + (Cam.GlobalTransform.Basis.Z * 150f);
+			}
+			else
+			{
+				Cam.GlobalPosition = Cam.GlobalPosition + new Vector3(15f, 30f, 25f);
+			}
+			_initialCamPos = Cam.GlobalPosition;
+		}
 
 		CallDeferred(MethodName.SetupUnifiedUI);
 		GameDatabase.Initialize();
@@ -105,18 +124,14 @@ public partial class GameManager : Node3D
 
 		CallDeferred(MethodName.UpdateStatsUI);
 
-		// === THE FIX: ONLY load the campaign here! No raw AdvanceScript() calls! ===
 		CampaignData campaign = StoryLoader.GetCampaignData();
 		if (campaign != null && campaign.Missions.Count > 0)
 		{
 			_campaignMissions = campaign.Missions;
-			
-			// === NEW: Store the camp conversations! ===
 			if (campaign.CampConversations != null)
 			{
 				CampConversationsPool = campaign.CampConversations;
 			}
-			
 			LoadMission(0); 
 		}
 		else
@@ -170,7 +185,7 @@ public partial class GameManager : Node3D
 
 	public override void _Process(double delta)
 	{
-		if (_dialogueActive || _levelUpActive || _currentState == State.Cutscene || _currentState == State.PartyMenu) return;
+		if (_dialogueActive || _levelUpActive || _lootScreenActive || _currentState == State.Cutscene || _currentState == State.PartyMenu) return;
 
 		Vector2 mousePos = GetViewport().GetMousePosition();
 		Vector2 screenSize = GetViewport().GetVisibleRect().Size;
@@ -185,25 +200,42 @@ public partial class GameManager : Node3D
 		if (moveDir != Vector2.Zero)
 		{
 			moveDir = moveDir.Normalized();
+			
 			Vector3 forward = -Cam.GlobalTransform.Basis.Z; forward.Y = 0; forward = forward.Normalized();
 			Vector3 right = Cam.GlobalTransform.Basis.X; right.Y = 0; right = right.Normalized();
-			Vector3 finalMove = (right * moveDir.X) + (forward * moveDir.Y);
-
-			Vector3 newPos = Cam.GlobalPosition + (finalMove * 15f * (float)delta);
 			
-			float limitLeft = 0f; float limitRight = 10f;
-			float limitUp = 0f; float limitDown = 15f;
+			// === THE FIX 1: Multiply Y input by 1.8f to equalize horizontal and vertical screen pan speed ===
+			Vector3 rawMove = (right * moveDir.X) + (forward * (moveDir.Y * 1.8f));
+			rawMove *= 35f * (float)delta; 
 
-			newPos.X = Mathf.Clamp(newPos.X, _initialCamPos.X - limitLeft, _initialCamPos.X + limitRight);
-			newPos.Z = Mathf.Clamp(newPos.Z, _initialCamPos.Z - limitUp, _initialCamPos.Z + limitDown);
+			Plane groundPlane = new Plane(Vector3.Up, 0f);
+			Vector2 screenCenter = screenSize / 2f;
+			Vector3 rayOrigin = Cam.ProjectRayOrigin(screenCenter);
+			Vector3 rayDir = Cam.ProjectRayNormal(screenCenter);
+			Vector3? currentLookAt = groundPlane.IntersectsRay(rayOrigin, rayDir);
 
-			Cam.GlobalPosition = newPos;
+			if (currentLookAt.HasValue)
+			{
+				Vector3 targetLookAt = currentLookAt.Value + rawMove;
+
+				// === THE FIX 2: Tighter left/bottom limits (increased from 0f to 12f) ===
+				float minBoundX = 12f;
+				float minBoundZ = 12f;
+				float maxBoundX = (GridWidth - 1) * TileSize; 
+				float maxBoundZ = (GridDepth - 1) * TileSize; 
+
+				targetLookAt.X = Mathf.Clamp(targetLookAt.X, minBoundX, maxBoundX);
+				targetLookAt.Z = Mathf.Clamp(targetLookAt.Z, minBoundZ, maxBoundZ);
+
+				Vector3 allowedMove = targetLookAt - currentLookAt.Value;
+				Cam.GlobalPosition += allowedMove;
+			}
 		}
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
 	{
-		if (_dialogueActive || _levelUpActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
+		if (_dialogueActive || _levelUpActive || _lootScreenActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
 
 		if (@event is InputEventMouseMotion mouseMotion) HandleHover(mouseMotion.Position);
 		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
@@ -288,6 +320,21 @@ public partial class GameManager : Node3D
 	{
 		_dialogueActive = false;
 		if (DimOverlay != null) DimOverlay.Visible = false;
+		
+		// === FIX: Explicitly hide Dialogic's layout node (the VN textbox panel) ===
+		// Without this, the Dialogic textbox can remain visible between dialogues,
+		// showing as a colored bar at the bottom of the screen during gameplay.
+		try
+		{
+			var styles = _dialogic.Get("Styles").As<GodotObject>();
+			if (styles != null)
+			{
+				var layoutNode = styles.Call("get_layout_node").As<CanvasItem>();
+				if (layoutNode != null && IsInstanceValid(layoutNode))
+					layoutNode.Visible = false;
+			}
+		}
+		catch { /* Dialogic layout may already be freed */ }
 		
 		// Shrink the background away with a snappy bounce
 		if (IsInstanceValid(_activeDialogueBackground))
@@ -484,24 +531,7 @@ public partial class GameManager : Node3D
 		effect.Play(emotionType, portraitTopScreenPosition);
 	}
 
-	private void CheckMidBattleEvents()
-	{
-		var evt = _activeMidBattleEvents.FirstOrDefault(e => e.Turn == _currentTurnNumber);
-		
-		if (!string.IsNullOrEmpty(evt.TimelinePath))
-		{
-			_activeMidBattleEvents.Remove(evt);
-			_isMidBattleDialogue = true;
-			StartDialogue(evt.TimelinePath, evt.Background);
-		}
-		else
-		{
-			// === CHANGED: use initiative instead of binary player/enemy state ===
-			_ = ProcessNextTurn();
-		}
-	}
-
-	private void LoadMission(int index)
+	private async void LoadMission(int index)
 	{
 		_currentMissionIndex = index;
 		string missionPath = _campaignMissions[index];
@@ -516,8 +546,8 @@ public partial class GameManager : Node3D
 
 		foreach (var unit in _party) unit.HealBetweenBattles();
 
-		// THE FIX: Always clear the board before generating a new one
-		ClearBoard(); 
+		// THE FIX: Wait for the old world to bounce away gracefully before making the new one
+		await ClearEnvironmentSceneryAsync(); 
 		GenerateGrid(); 
 		AdvanceScript();
 	}

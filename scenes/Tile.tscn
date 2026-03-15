@@ -4,7 +4,8 @@
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_2sjy5"]
 
-[sub_resource type="PlaneMesh" id="PlaneMesh_vhibn"]
+[sub_resource type="BoxMesh" id="BoxMesh_2sjy5"]
+size = Vector3(2, 4, 2)
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_r3gf4"]
 size = Vector3(2, 0.2, 2)
@@ -13,8 +14,9 @@ size = Vector3(2, 0.2, 2)
 script = ExtResource("1_2sjy5")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -2, 0)
 material_overlay = SubResource("StandardMaterial3D_2sjy5")
-mesh = SubResource("PlaneMesh_vhibn")
+mesh = SubResource("BoxMesh_2sjy5")
 
 [node name="Area3D" type="Area3D" parent="."]
 

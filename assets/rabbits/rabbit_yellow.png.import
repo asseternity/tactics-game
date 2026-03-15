@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cjxibustwki5v"
-path="res://.godot/imported/HR_Archer.png-69cff84cadcdc794dff9a943c70801bf.ctex"
+uid="uid://cep4q0xfj0kjp"
+path="res://.godot/imported/rabbit_yellow.png-66f06abdd381d92911cc41dcd1a7bedb.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/HR_Archer.png"
-dest_files=["res://.godot/imported/HR_Archer.png-69cff84cadcdc794dff9a943c70801bf.ctex"]
+source_file="res://assets/rabbits/rabbit_yellow.png"
+dest_files=["res://.godot/imported/rabbit_yellow.png-66f06abdd381d92911cc41dcd1a7bedb.ctex"]
 
 [params]
 
