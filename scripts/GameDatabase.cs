@@ -9,15 +9,15 @@ public static class GameDatabase
 	{
 		Units.Clear(); Items.Clear();
 
-		Units["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right, 7, CardSuit.Hearts);
-		Units["Dougal"]  = new UnitProfile("Dougal",  "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right, 9, CardSuit.Spades);
-		Units["Pepper"]  = new UnitProfile("Pepper",  "res://assets/rabbits/rabbit.png",       16, 12, 1, 4, 0, UnitFacing.Right, 8, CardSuit.Diamonds);
-		Units["Cobalt"]  = new UnitProfile("Cobalt",  "res://assets/rabbits/rabbit_blue.png",   20, 10, 1, 3, 0, UnitFacing.Right, 6, CardSuit.Clubs);
-		Units["Moss"]    = new UnitProfile("Moss",    "res://assets/rabbits/rabbit_green.png",  22,  9, 1, 3, 0, UnitFacing.Right, 5, CardSuit.Hearts);
-		Units["Ember"]   = new UnitProfile("Ember",   "res://assets/rabbits/rabbit_red.png",    14, 16, 1, 4, 0, UnitFacing.Right, 10, CardSuit.Diamonds);
-		Units["Sunny"]   = new UnitProfile("Sunny",   "res://assets/rabbits/rabbit_yellow.png", 18, 11, 1, 5, 0, UnitFacing.Right, 7, CardSuit.Spades);
-		Units["Guard"]   = new UnitProfile("Goblin",  "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right, 4, CardSuit.Clubs);
-		Units["Orc"]     = new UnitProfile("Ogre",    "res://assets/HR_ORC2.png",  25, 8, 1, 2, 120, UnitFacing.Center, 3, CardSuit.Diamonds);
+		Units["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 15, 0, UnitFacing.Right, 7, CardSuit.Hearts);
+		Units["Dougal"]  = new UnitProfile("Dougal",  "res://assets/HighRes5.png", 18, 18, 1, 15, 0, UnitFacing.Right, 9, CardSuit.Spades);
+		Units["Pepper"]  = new UnitProfile("Pepper",  "res://assets/rabbits/rabbit.png",       16, 12, 1, 15, 0, UnitFacing.Right, 8, CardSuit.Diamonds);
+		Units["Cobalt"]  = new UnitProfile("Cobalt",  "res://assets/rabbits/rabbit_blue.png",   20, 10, 1, 15, 0, UnitFacing.Right, 6, CardSuit.Clubs);
+		Units["Moss"]    = new UnitProfile("Moss",    "res://assets/rabbits/rabbit_green.png",  22,  9, 1, 15, 0, UnitFacing.Right, 5, CardSuit.Hearts);
+		Units["Ember"]   = new UnitProfile("Ember",   "res://assets/rabbits/rabbit_red.png",    14, 16, 1, 15, 0, UnitFacing.Right, 10, CardSuit.Diamonds);
+		Units["Sunny"]   = new UnitProfile("Sunny",   "res://assets/rabbits/rabbit_yellow.png", 18, 11, 1, 15, 0, UnitFacing.Right, 7, CardSuit.Spades);
+		Units["Guard"]   = new UnitProfile("Goblin",  "res://assets/HighRes4.png", 10, 3, 1, 5, 140, UnitFacing.Right, 4, CardSuit.Clubs);
+		Units["Orc"]     = new UnitProfile("Ogre",    "res://assets/HR_ORC2.png",  25, 8, 1, 4, 120, UnitFacing.Center, 3, CardSuit.Diamonds);
 
 		Items["RustyMail"]=new Equipment("RustyMail","Rusty Mail","res://icons/Rusty Mail.png",EquipSlot.Armor,bonusHp:1);
 		Items["AgilityCloak"]=new Equipment("AgilityCloak","Agility Cloak","res://icons/Agility Cloak.png",EquipSlot.Armor,bonusHp:1,bonusMov:1);

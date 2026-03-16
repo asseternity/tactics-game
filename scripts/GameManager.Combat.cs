@@ -162,6 +162,11 @@ public partial class GameManager
 		Color dc = m > 1f ? new Color(1f, 0.85f, 0.1f) : new Color(1f, 0.2f, 0.2f);
 		SpawnFloatingText(et.GlobalPosition, m > 1f ? $"{dmg} ×{m:F2}" : dmg.ToString(), dc, m > 1.5f ? 40 : 30);
 		await et.TakeDamage(dmg, au);
+	 
+		// === BOND GAINS FROM COMBAT ===
+		if (GodotObject.IsInstanceValid(au))
+			ProcessCombatBondGains(au, et, dmg * 10);
+	 
 		if (!GodotObject.IsInstanceValid(au)) return;
 		for (int i = 0; i < 5; i++) { Cam.HOffset = (float)GD.RandRange(-0.12f, 0.12f); Cam.VOffset = (float)GD.RandRange(-0.12f, 0.12f); await ToSignal(GetTree().CreateTimer(0.03f), "timeout"); }
 		Cam.HOffset = 0; Cam.VOffset = 0;
@@ -301,13 +306,18 @@ public partial class GameManager
 	// === DEATH ===
 	private async void HandleUnitDeath(Unit d)
 	{
-		Input.SetCustomMouseCursor(null); _units.Remove(d); _initiative.Remove(d);
+		Input.SetCustomMouseCursor(null);
+		_units.Remove(d);
+		_initiative.Remove(d);
+		RefreshInitiativeUI();
+	 
 		if (!_units.Any(u => GodotObject.IsInstanceValid(u) && !u.IsFriendly))
-		{ 
-			_currentState = State.Cutscene; ClearMovementRange(); ClearHover(); DeselectUnit(); ShowActions(false); _comboVisualizer?.ClearVisuals(); HideInitiativeBar();
-			await ToSignal(GetTree().CreateTimer(0.4f), "timeout"); 
-			await ClearEnvironmentSceneryAsync(); 
-			AdvanceScript(); 
+		{
+			_currentState = State.Cutscene; ClearMovementRange(); ClearHover(); DeselectUnit();
+			ShowActions(false); _comboVisualizer?.ClearVisuals(); HideInitiativeBar();
+			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
+			await ClearEnvironmentSceneryAsync();
+			AdvanceScript();
 		}
 	}
 
@@ -342,49 +352,113 @@ public partial class GameManager
 		if (_pulseTween != null && _pulseTween.IsValid()) { _pulseTween.Kill(); _pulseTween = null; }
 		if (_initiativeBar != null && IsInstanceValid(_initiativeBar)) { Tween h = CreateTween(); h.TweenProperty(_initiativeBar, "position:y", -200f, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); h.Finished += () => { if (IsInstanceValid(_initiativeBar)) _initiativeBar.Visible = false; }; }
 	}
+	
 	private void RefreshInitiativeUI()
 	{
-		if (_initiativeBar == null) BuildInitiativeBar(); if (_initiativeBar == null) return;
-		_initiativeBar.Visible = true; _initiativeBar.Position = new Vector2(0, 8);
+		if (_initiativeBar == null) BuildInitiativeBar();
+		if (_initiativeBar == null) return;
+		_initiativeBar.Visible = true;
+		_initiativeBar.Position = new Vector2(0, 8);
 		if (_pulseTween != null && _pulseTween.IsValid()) { _pulseTween.Kill(); _pulseTween = null; }
 		foreach (Node c in _initiativeBar.GetChildren()) c.QueueFree();
-		var order = _initiative.AllInOrder(); int ci = order.IndexOf(_initiative.Current);
-		for (int i = 0; i < Mathf.Min(order.Count, 8); i++)
+	 
+		var order = _initiative.AllInOrder();
+		int ci = order.IndexOf(_initiative.Current);
+	 
+		for (int i = 0; i < order.Count; i++)
 		{
-			int idx = (ci + i) % Mathf.Max(1, order.Count); if (idx < 0 || idx >= order.Count) continue;
-			Unit u = order[idx]; if (!GodotObject.IsInstanceValid(u)) continue;
-			bool ic = i == 0; float pw = ic ? 110 : 80; float ph = ic ? 155 : 110;
-			Color bc = u.IsFriendly ? new Color(0.3f, 0.85f, 1f) : new Color(1f, 0.35f, 0.35f); if (ic) bc = new Color(1f, 0.92f, 0.3f);
-			PanelContainer pip = new() { CustomMinimumSize = new Vector2(pw, ph) }; if (MasterTheme != null) pip.Theme = MasterTheme;
-			int bw = ic ? 5 : 3;
-			pip.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = ic ? new Color(0.12f, 0.1f, 0.06f, 0.97f) : new Color(0.06f, 0.06f, 0.09f, 0.95f),
-				CornerRadiusTopLeft=12,CornerRadiusTopRight=12,CornerRadiusBottomLeft=12,CornerRadiusBottomRight=12,
-				BorderWidthBottom=bw,BorderWidthTop=bw,BorderWidthLeft=bw,BorderWidthRight=bw, BorderColor=bc,
-				ShadowSize=ic?16:6, ShadowColor=new Color(bc.R,bc.G,bc.B,ic?0.7f:0.4f), ShadowOffset=new Vector2(0,ic?5:2),
-				ContentMarginLeft=6,ContentMarginRight=6,ContentMarginTop=6,ContentMarginBottom=6 });
-			VBoxContainer vb = new() { Alignment = BoxContainer.AlignmentMode.Center }; vb.AddThemeConstantOverride("separation", 3); vb.SetAnchorsPreset(Control.LayoutPreset.FullRect); pip.AddChild(vb);
+			int idx = (ci + i) % Mathf.Max(1, order.Count);
+			if (idx < 0 || idx >= order.Count) continue;
+			Unit u = order[idx];
+			if (!GodotObject.IsInstanceValid(u)) continue;
+	 
+			bool isActive = i == 0;
+			float pw = isActive ? 120 : 76;
+			float ph = isActive ? 165 : 105;
+			Color teamColor = u.IsFriendly ? new Color(0.2f, 0.75f, 1f) : new Color(1f, 0.3f, 0.3f);
+			Color borderColor = isActive ? new Color(1f, 0.9f, 0.3f) : teamColor;
+	 
+			PanelContainer pip = new() { CustomMinimumSize = new Vector2(pw, ph) };
+			if (MasterTheme != null) pip.Theme = MasterTheme;
+			pip.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+			{
+				BgColor = isActive ? new Color(0.14f, 0.12f, 0.06f, 0.98f) : new Color(0.05f, 0.05f, 0.08f, 0.95f),
+				CornerRadiusTopLeft = 10, CornerRadiusTopRight = 10, CornerRadiusBottomLeft = 10, CornerRadiusBottomRight = 10,
+				BorderWidthBottom = isActive ? 4 : 2, BorderWidthTop = isActive ? 4 : 2, BorderWidthLeft = isActive ? 4 : 2, BorderWidthRight = isActive ? 4 : 2,
+				BorderColor = borderColor,
+				ShadowSize = isActive ? 14 : 4, ShadowColor = new Color(borderColor.R, borderColor.G, borderColor.B, isActive ? 0.6f : 0.25f), ShadowOffset = new Vector2(0, isActive ? 4 : 2),
+				ContentMarginLeft = 5, ContentMarginRight = 5, ContentMarginTop = 5, ContentMarginBottom = 5
+			});
+	 
+			VBoxContainer vb = new() { Alignment = BoxContainer.AlignmentMode.Center };
+			vb.AddThemeConstantOverride("separation", 2);
+			vb.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			pip.AddChild(vb);
+	 
+			if (isActive)
+			{
+				Label turnBadge = new Label { Text = u.IsFriendly ? "▶ YOUR TURN" : "▶ ENEMY", HorizontalAlignment = HorizontalAlignment.Center };
+				turnBadge.AddThemeFontSizeOverride("font_size", 10);
+				turnBadge.AddThemeColorOverride("font_color", new Color(1f, 0.9f, 0.4f));
+				turnBadge.AddThemeConstantOverride("outline_size", 3);
+				turnBadge.AddThemeColorOverride("font_outline_color", Colors.Black);
+				if (_fantasyFont != null) turnBadge.AddThemeFontOverride("font", _fantasyFont);
+				vb.AddChild(turnBadge);
+			}
+	 
 			Texture2D st = GD.Load<Texture2D>(u.Data.Profile.SpritePath);
-			if (st != null) vb.AddChild(new TextureRect { Texture = st, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(pw - 14, ic ? 65 : 42), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
-			string dn = u.Data.Profile.Name; if (!ic && dn.Length > 7) dn = dn.Substring(0, 6) + ".";
+			if (st != null)
+				vb.AddChild(new TextureRect { Texture = st, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(pw - 12, isActive ? 60 : 38), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+	 
+			string dn = u.Data.Profile.Name;
+			if (!isActive && dn.Length > 7) dn = dn.Substring(0, 6) + ".";
 			Label nl = new() { Text = dn, HorizontalAlignment = HorizontalAlignment.Center };
-			nl.AddThemeFontSizeOverride("font_size", ic ? 16 : 12); nl.AddThemeColorOverride("font_color", ic ? new Color(1f, 0.95f, 0.7f) : bc);
-			nl.AddThemeColorOverride("font_outline_color", Colors.Black); nl.AddThemeConstantOverride("outline_size", ic ? 6 : 3);
-			if (_fantasyFont != null) nl.AddThemeFontOverride("font", _fantasyFont); vb.AddChild(nl);
-			float ch = ic ? 40 : 28; float cw = ch * 0.7f;
+			nl.AddThemeFontSizeOverride("font_size", isActive ? 14 : 11);
+			nl.AddThemeColorOverride("font_color", isActive ? new Color(1f, 0.95f, 0.8f) : new Color(0.9f, 0.9f, 0.9f));
+			nl.AddThemeConstantOverride("outline_size", isActive ? 5 : 3);
+			nl.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) nl.AddThemeFontOverride("font", _fantasyFont);
+			vb.AddChild(nl);
+	 
+			float ch = isActive ? 36 : 24; float cw = ch * 0.7f;
 			if (u.IsFriendly && u.Data.CardRank != CardRank.None)
-			{ string cp = CardImageHelper.GetCardImagePath(u.Data.CardSuit, u.Data.CardRank); Texture2D ct = !string.IsNullOrEmpty(cp) ? GD.Load<Texture2D>(cp) : null;
-				if (ct != null) vb.AddChild(new TextureRect { Texture = ct, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter }); }
-			else if (!u.IsFriendly) { Texture2D bt = GD.Load<Texture2D>(CardImageHelper.GetCardBackPath(i % 9));
-				if (bt != null) vb.AddChild(new TextureRect { Texture = bt, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter }); }
+			{
+				string cp = CardImageHelper.GetCardImagePath(u.Data.CardSuit, u.Data.CardRank);
+				Texture2D ct = !string.IsNullOrEmpty(cp) ? GD.Load<Texture2D>(cp) : null;
+				if (ct != null) vb.AddChild(new TextureRect { Texture = ct, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			}
+			else if (!u.IsFriendly)
+			{
+				Texture2D bt = GD.Load<Texture2D>(CardImageHelper.GetCardBackPath(i % 9));
+				if (bt != null) vb.AddChild(new TextureRect { Texture = bt, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			}
+			else
+			{
+				Label noCard = new Label { Text = "?", HorizontalAlignment = HorizontalAlignment.Center };
+				noCard.AddThemeFontSizeOverride("font_size", isActive ? 18 : 13);
+				noCard.AddThemeColorOverride("font_color", new Color(0.35f, 0.35f, 0.4f));
+				if (_fantasyFont != null) noCard.AddThemeFontOverride("font", _fantasyFont);
+				vb.AddChild(noCard);
+			}
+	 
+			vb.AddChild(new ColorRect { Color = teamColor, CustomMinimumSize = new Vector2(0, 3), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill });
 			_initiativeBar.AddChild(pip);
-			pip.PivotOffset = new Vector2(pw / 2f, ph / 2f); pip.Scale = Vector2.Zero;
-			float ed = i * 0.06f;
-			CreateTween().TweenProperty(pip, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(ed);
-			if (ic) { _pulseTween = CreateTween().SetLoops(); _pulseTween.TweenInterval(ed + 0.4f);
-				_pulseTween.TweenProperty(pip, "scale", new Vector2(1.07f, 1.07f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
-				_pulseTween.TweenProperty(pip, "scale", new Vector2(0.96f, 0.96f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut); }
+	 
+			pip.PivotOffset = new Vector2(pw / 2f, ph / 2f);
+			pip.Scale = Vector2.Zero;
+			CreateTween().TweenProperty(pip, "scale", Vector2.One, 0.25f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(i * 0.04f);
+	 
+			if (isActive)
+			{
+				_pulseTween = CreateTween().SetLoops();
+				_pulseTween.TweenInterval(i * 0.04f + 0.3f);
+				_pulseTween.TweenProperty(pip, "scale", new Vector2(1.06f, 1.06f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				_pulseTween.TweenProperty(pip, "scale", new Vector2(0.97f, 0.97f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			}
 		}
 	}
+
 	private void BuildInitiativeBar()
 	{ _initiativeBar = new HBoxContainer(); _initiativeBar.SetAnchorsPreset(Control.LayoutPreset.TopWide); _initiativeBar.Position = new Vector2(0, 8); _initiativeBar.AddThemeConstantOverride("separation", 12); _initiativeBar.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_initiativeBar); else AddChild(_initiativeBar); }

@@ -319,8 +319,11 @@ public partial class GameManager
 								patchMat.NormalTexture = gridNormalTex;
 							}
 
-							Color baseDirt = new Color(0.3f, 0.22f, 0.15f); 
-							patchMat.AlbedoColor = baseDirt.Lerp(new Color(0.15f, 0.1f, 0.05f), rawWorldNoise); 
+							// Sample the actual grid tile color so outer terrain matches perfectly
+							Color baseDirt = new Color(0.3f, 0.22f, 0.15f);
+							if (_grid.Count > 0 && _grid.Values.First().GetNodeOrNull<MeshInstance3D>("MeshInstance3D")?.GetSurfaceOverrideMaterial(0) is StandardMaterial3D gridMat)
+								baseDirt = gridMat.AlbedoColor;
+							patchMat.AlbedoColor = baseDirt.Lerp(baseDirt.Darkened(0.15f), rawWorldNoise);
 							dirtCube.MaterialOverride = patchMat;
 
 							dirtCube.Position = new Vector3(subX, targetH - (totalCubeHeight / 2f), subZ);

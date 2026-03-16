@@ -1,3 +1,4 @@
+// GameManager.Camp.cs
 using Godot;
 using System.Collections.Generic;
 using System.Linq;

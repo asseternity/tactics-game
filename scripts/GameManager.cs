@@ -1,3 +1,4 @@
+// GameManager.cs
 using Godot;
 using Godot.Collections;
 using System.Collections.Generic;
@@ -54,6 +55,10 @@ public partial class GameManager : Node3D
 	private Timer _cloudTimer;
 	private CanvasLayer _dialogueBgLayer;
 	private TextureRect _activeDialogueBackground;
+	
+	private List<PanelContainer> _activeBondNotifications = new();
+	private Queue<System.Action> _celebrationQueue = new();
+	private bool _celebrationPlaying = false;
 
 	// === GAME DATA ===
 	public List<CampConversation> CampConversationsPool = new();
@@ -97,6 +102,7 @@ public partial class GameManager : Node3D
 		}
 
 		CallDeferred(MethodName.SetupUnifiedUI);
+		GameJuiceUpgrade.Install(this);
 		GameDatabase.Initialize();
 		GenerateGrid();
 		_comboVisualizer = new ComboVisualizer();
@@ -238,7 +244,33 @@ public partial class GameManager : Node3D
 		if (_dialogueActive || _levelUpActive || _lootScreenActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
 
 		if (@event is InputEventMouseMotion mouseMotion) HandleHover(mouseMotion.Position);
-		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed)
+		{
+			if (mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+			else if (_currentState == State.PlayerTurn || _currentState == State.SelectingAttackTarget)
+				HandleZoom(mouseEvent);
+		}
+	}
+
+	private void HandleZoom(InputEventMouseButton e)
+	{
+		if (Cam == null) return;
+		float zoomStep = e.ButtonIndex == MouseButton.WheelUp ? -1.5f : 
+						 e.ButtonIndex == MouseButton.WheelDown ? 1.5f : 0f;
+		if (zoomStep == 0f) return;
+
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+		{
+			float target = Mathf.Clamp(Cam.Size + zoomStep, 18f, 50f);
+			CreateTween().TweenProperty(Cam, "size", target, 0.15f)
+				.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+		else
+		{
+			float target = Mathf.Clamp(Cam.Fov + zoomStep * 2f, 30f, 90f);
+			CreateTween().TweenProperty(Cam, "fov", target, 0.15f)
+				.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
 	}
 
 	// === SCRIPT & STORY LOGIC ===
@@ -371,59 +403,18 @@ public partial class GameManager : Node3D
 	{
 		return StoryFlags.TryGetValue(flagName, out bool val) && val;
 	}
-
-	// Called by Dialogic's if statements!
-	public int GetRelationship(string charName, string relType)
-	{
-		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName);
-		if (companion != null && companion.Relationships.ContainsKey(relType))
-			return companion.Relationships[relType];
-		return 0; // Return 0 if they haven't joined or the stat doesn't exist
-	}
-
-	private void UpdateRelationship(string charName, string relType, int amount)
-	{
-		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
-		if (companion != null && companion.Relationships.ContainsKey(relType))
-		{
-			int oldVal = companion.Relationships[relType];
-			int newVal = Mathf.Clamp(oldVal + amount, 0, 100);
-			companion.Relationships[relType] = newVal;
-
-			// === CARD RANK UP: When Respect hits a threshold, advance the card! ===
-			// (Only track "Respect" for card rank for now; you can expand this.)
-			if (relType == "Respect")
-			{
-				// Thresholds: 60, 70, 80, 85, 90, 95, 100 → each triggers a rank-up
-				int[] thresholds = { 60, 70, 80, 85, 90, 95, 100 };
-				bool crossedThreshold = false;
-				foreach (int t in thresholds)
-				{
-					if (oldVal < t && newVal >= t) { crossedThreshold = true; break; }
-				}
-				if (crossedThreshold)
-				{
-					CardRank newRank = companion.AdvanceCardRank();
-					ShowCardRankUpNotification(companion, newRank);
-				}
-			}
-			
-			ShowRelationshipNotification(charName, relType, amount, oldVal, newVal);
-		}
-	}
 	
 	private void OnDialogicSignal(string argument)
 	{
 		if (string.IsNullOrEmpty(argument)) return;
-		
-		// === THE JUICE FIX 3: Catch the ChoicePicked signal! ===
+	 
 		if (argument == "ChoicePicked")
 		{
 			ShowChoicePickedJuice();
 			return;
 		}
-		
-		if (argument.StartsWith("JumpTo:")) 
+	 
+		if (argument.StartsWith("JumpTo:"))
 		{
 			_pendingSection = argument.Split(":")[1];
 		}
@@ -438,10 +429,21 @@ public partial class GameManager : Node3D
 		}
 		else if (argument.StartsWith("Rel:"))
 		{
+			// Format: "Rel:CharName:Bond:Amount" e.g. "Rel:Dougal:Bond:30" or "Rel:Dougal:Bond:-10"
 			string[] parts = argument.Split(':');
-			if (parts.Length == 4 && int.TryParse(parts[3], out int amount))
+			if (parts.Length >= 4 && int.TryParse(parts[3], out int amount))
 			{
-				UpdateRelationship(parts[1], parts[2], amount);
+				AddBond(parts[1], amount);
+				// Spawn arrow over the unit on the field if they exist
+				Unit fieldUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.Data?.Profile.Name == parts[1]);
+				if (fieldUnit != null) SpawnBondArrow(fieldUnit, amount > 0);
+			}
+			// Also support short format "Rel:CharName:Amount"
+			else if (parts.Length >= 3 && int.TryParse(parts[2], out int amount2))
+			{
+				AddBond(parts[1], amount2);
+				Unit fieldUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.Data?.Profile.Name == parts[1]);
+				if (fieldUnit != null) SpawnBondArrow(fieldUnit, amount2 > 0);
 			}
 		}
 		else if (argument.StartsWith("Emotion:"))
@@ -579,30 +581,176 @@ public partial class GameManager : Node3D
 	{
 		if (string.IsNullOrWhiteSpace(cond)) return true;
 		cond = cond.Trim();
-
-		if (cond.StartsWith("Rel:"))
+	 
+		// New format: "Bond:Dougal >= 60"
+		if (cond.StartsWith("Bond:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string charName = tokens[0].Split(':')[1];
+				int currentVal = GetBondXP(charName);
+				if (int.TryParse(tokens[2], out int target))
+				{
+					return tokens[1] switch
+					{
+						">" => currentVal > target,
+						"<" => currentVal < target,
+						">=" => currentVal >= target,
+						"<=" => currentVal <= target,
+						"==" => currentVal == target,
+						_ => true
+					};
+				}
+			}
+		}
+		// Legacy format: "Rel:Dougal:Respect >= 60" → just checks BondXP
+		else if (cond.StartsWith("Rel:"))
 		{
 			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
 			if (tokens.Length == 3)
 			{
 				string[] idParts = tokens[0].Split(':');
-				if (idParts.Length == 3)
+				string charName = idParts.Length >= 2 ? idParts[1] : "";
+				int currentVal = GetBondXP(charName);
+				if (int.TryParse(tokens[2], out int target))
 				{
-					int currentVal = GetRelationship(idParts[1], idParts[2]);
-					if (int.TryParse(tokens[2], out int target))
+					return tokens[1] switch
 					{
-						if (tokens[1] == ">") return currentVal > target;
-						if (tokens[1] == "<") return currentVal < target;
-						if (tokens[1] == ">=") return currentVal >= target;
-						if (tokens[1] == "<=") return currentVal <= target;
-						if (tokens[1] == "==") return currentVal == target;
-					}
+						">" => currentVal > target,
+						"<" => currentVal < target,
+						">=" => currentVal >= target,
+						"<=" => currentVal <= target,
+						"==" => currentVal == target,
+						_ => true
+					};
 				}
 			}
 		}
 		else if (cond.StartsWith("!Flag:")) return !HasFlag(cond.Substring(6));
 		else if (cond.StartsWith("Flag:")) return HasFlag(cond.Substring(5));
-
-		return true; 
+	 
+		return true;
+	}
+	
+	/// <summary>
+	/// Central bond change method. Handles positive gains, negative losses, 
+	/// rank-ups, rank-downs, notifications, and all animations.
+	/// </summary>
+	public void AddBond(string charName, int amount)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		if (companion == null || amount == 0) return;
+	 
+		int oldXP = companion.BondXP;
+		CardRank oldRank = companion.CardRank;
+		int rankChange = companion.AddBondXP(amount);
+	 
+		ShowBondNotification(charName, amount, oldXP, companion.BondXP, rankChange);
+	 
+		CardRank capturedNewRank = companion.CardRank;
+		CardRank capturedOldRank = oldRank;
+		PersistentUnit capturedUnit = companion;
+	 
+		if (rankChange == 1)
+			QueueCelebration(() => ShowCardRankUpCelebration(capturedUnit, capturedOldRank, capturedNewRank));
+		else if (rankChange == -1)
+			QueueCelebration(() => ShowCardRankDownCelebration(capturedUnit, capturedOldRank, capturedNewRank));
+	}
+	 
+	private void QueueCelebration(System.Action celebAction)
+	{
+		_celebrationQueue.Enqueue(celebAction);
+		if (!_celebrationPlaying)
+			PlayNextCelebration();
+	}
+	 
+	private void PlayNextCelebration()
+	{
+		if (_celebrationQueue.Count == 0) { _celebrationPlaying = false; return; }
+		_celebrationPlaying = true;
+		_celebrationQueue.Dequeue().Invoke();
+	}
+	 
+	/// <summary>
+	/// After an attack resolves, check adjacency and award bond XP.
+	/// </summary>
+	public void ProcessCombatBondGains(Unit attacker, Unit target, int damageDealt)
+	{
+		if (damageDealt <= 0 || !attacker.IsFriendly) return;
+	 
+		Unit playerUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.IsFriendly && u.Data.IsPlayerCharacter);
+		if (playerUnit == null) return;
+	 
+		if (attacker.Data.IsPlayerCharacter)
+		{
+			foreach (var ally in _units.Where(u => GodotObject.IsInstanceValid(u) && u.IsFriendly && !u.Data.IsPlayerCharacter && u != attacker))
+			{
+				if (GetGridDistance(attacker.GlobalPosition, ally.GlobalPosition) <= 1)
+				{
+					int bondAmount = Mathf.Max(1, damageDealt / 2);
+					AddBond(ally.Data.Profile.Name, bondAmount);
+					SpawnBondArrow(ally, true);
+				}
+			}
+		}
+		else
+		{
+			bool playerNearEnemy = GodotObject.IsInstanceValid(target) && GetGridDistance(playerUnit.GlobalPosition, target.GlobalPosition) <= 1;
+			bool playerNearAlly = GetGridDistance(playerUnit.GlobalPosition, attacker.GlobalPosition) <= 1;
+	 
+			if (playerNearEnemy || playerNearAlly)
+			{
+				int bondAmount = Mathf.Max(1, damageDealt / 2);
+				AddBond(attacker.Data.Profile.Name, bondAmount);
+				SpawnBondArrow(attacker, true);
+			}
+		}
+	}
+	 
+	/// <summary>Bouncy green/red arrow above a unit that just gained/lost bond XP.</summary>
+	private void SpawnBondArrow(Unit unit, bool positive)
+	{
+		if (!GodotObject.IsInstanceValid(unit)) return;
+	 
+		Label3D arrow = new Label3D
+		{
+			Text = positive ? "▲" : "▼",
+			FontSize = 90,
+			Modulate = positive ? new Color(0.3f, 1f, 0.4f) : new Color(1f, 0.3f, 0.3f),
+			OutlineModulate = Colors.Black,
+			OutlineSize = 10,
+			Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+			NoDepthTest = true,
+			RenderPriority = 55
+		};
+		if (_fantasyFont != null) arrow.Font = _fantasyFont;
+	 
+		AddChild(arrow);
+		arrow.GlobalPosition = unit.GlobalPosition + Vector3.Up * 2.5f;
+	 
+		Tween t = CreateTween();
+		float dir = positive ? 1.5f : -0.5f;
+		t.TweenProperty(arrow, "global_position:y", arrow.GlobalPosition.Y + dir, 0.4f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.Parallel().TweenProperty(arrow, "scale", Vector3.One * 1.3f, 0.15f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(arrow, "scale", Vector3.One, 0.1f)
+			.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+		t.TweenInterval(0.4f);
+		t.TweenProperty(arrow, "modulate:a", 0f, 0.3f);
+		t.Finished += () => arrow.QueueFree();
+	}
+	
+	public int GetBondXP(string charName)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		return companion?.BondXP ?? 0;
+	}
+	 
+	// Backwards compat for anything still calling the old signature
+	public int GetRelationship(string charName, string relType)
+	{
+		return GetBondXP(charName);
 	}
 }

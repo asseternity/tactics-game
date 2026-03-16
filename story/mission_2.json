@@ -28,7 +28,7 @@
 				  "SetFlag": "TriedToStealIdol",
 				  "Steps": [
 					{
-					  "Action": "If", "Condition": "Rel:Dougal:Agreement < 50",
+					  "Action": "If", "Condition": "Rel:Dougal:Bond < 50",
 					  "Steps": [
 						{ "Speaker": "Dougal", "Text": "Professionals?! That thing is evil! I've had enough of your 'suave' compromises!", "Emotion": "anger" },
 						{ "Speaker": "Ambrose", "Text": "Dougal, wait, don't swing that hammer—!", "Emotion": "fear" },
@@ -49,8 +49,7 @@
 				  "Text": "You're right. No amount of gold is worth unleashing this into the world. Smash it.",
 				  "SetFlag": "IdolDestroyed",
 				  "Steps": [
-					{ "Action": "Signal", "Value": "Rel:Dougal:Respect:30" },
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:30" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Bond:30" },
 					{ "Speaker": "Dougal", "Text": "Glad to see there's a conscience under that silk shirt, Ambrose.", "Emotion": "bravery" },
 					{ "Speaker": "Ambrose", "Text": "Don't get used to it. I'm going to complain about the lost payday for a month." }
 				  ]

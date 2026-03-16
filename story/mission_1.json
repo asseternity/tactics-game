@@ -18,19 +18,19 @@
 			{ "Action": "If", "Condition": "Flag:SparedDockGuard", "Steps": [
 				{ "Action": "Join", "Character": "Guard", "Position": "Center", "Facing": "Left" },
 				{ "Speaker": "Guard", "Text": "Intruders! It's them! Just like the dock-watch reported! Sound the alarm!", "Emotion": "anger" },
-				{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-15" },
+				{ "Action": "Signal", "Value": "Rel:Dougal:Bond:-15" },
 				{ "Speaker": "Dougal", "Text": "See, Ambrose?! What did I tell you about loose ends!", "Emotion": "anger" },
 				{ "Action": "Leave", "Character": "Guard" } ] },
 			{ "Action": "Else", "Steps": [
 				{ "Speaker": "Ambrose", "Text": "Quiet as a whisper. See, Dougal? Clearing out the docks paid off.", "Emotion": "bravery" },
-				{ "Action": "Signal", "Value": "Rel:Dougal:Respect:10" } ] },
+				{ "Action": "Signal", "Value": "Rel:Dougal:Bond:10" } ] },
 			{ "Speaker": "Ambrose", "Text": "Alright, the entrance to the artifact vault is just ahead. It's guarded by the Magister's elite." },
 			{ "Choices": [
 				{ "Text": "I'll use my Venatori disguise to bribe our way past.", "SetFlag": "BribedVaultGuards", "Steps": [
 					{ "Speaker": "Ambrose", "Text": "A few gold sovereigns can open doors that swords cannot. Follow my lead.", "Emotion": "bravery" },
 					{ "Action": "Signal", "Value": "JumpTo:VaultEntry_Sneak" } ] },
 				{ "Text": "Dougal, kick the doors in. We take them by surprise.", "SetFlag": "AssaultedVault", "Steps": [
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Bond:20" },
 					{ "Speaker": "Dougal", "Text": "Now you're speaking my language.", "Emotion": "bravery" },
 					{ "Action": "Signal", "Value": "JumpTo:VaultEntry_Loud" } ] } ] } ] } ] },
 	"VaultEntry_Sneak": { "Events": [

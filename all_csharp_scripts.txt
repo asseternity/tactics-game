@@ -1,5 +1,5 @@
 === ALL C# SCRIPTS COMBINED ===
-Generated on: 2026-03-15 17:49:10
+Generated on: 2026-03-16 22:47:13
 Source folder: res://scripts/
 ==========================================================================================
 
@@ -100,6 +100,15 @@ public static class CardRankExtensions
 		int idx = Array.IndexOf(order, face);
 		if (idx < 0) return CardRank.Two;
 		return idx + 1 < order.Length ? (CardRank)(tier * 100 + order[idx + 1]) : (CardRank)((tier + 1) * 100 + 2);
+	}
+	public static CardRank PrevRank(this CardRank current)
+	{
+		if (current == CardRank.None || current == CardRank.Two) return CardRank.None;
+		int[] order = { 2, 3, 4, 5, 11, 12, 13, 14 };
+		int tier = current.Tier(); int face = current.FaceValue();
+		int idx = Array.IndexOf(order, face);
+		if (idx < 0) return CardRank.None;
+		return idx - 1 >= 0 ? (CardRank)(tier * 100 + order[idx - 1]) : tier > 0 ? (CardRank)((tier - 1) * 100 + 14) : CardRank.None;
 	}
 }
 
@@ -215,24 +224,110 @@ public static class PokerHandEvaluator
 public static class FlankingDetector
 {
 	const float TileSize = 2f;
-	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(Unit attacker, Unit target, List<Unit> all)
+
+	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(
+		Unit attacker, Unit target, List<Unit> all,
+		out Dictionary<Unit, Unit> chainParent)
 	{
 		var result = new List<(Unit, Unit)>();
-		var allies = all.Where(u => u.IsFriendly && u != attacker && GodotObject.IsInstanceValid(u)).ToList();
-		var enemies = all.Where(u => !u.IsFriendly && GodotObject.IsInstanceValid(u)).ToList();
-		var chained = new HashSet<Unit> { attacker }; var frontier = new Queue<Unit>();
-		foreach (var a in allies) if (IsFlank(attacker, a, target)) { result.Add((a, target)); if (chained.Add(a)) frontier.Enqueue(a); }
-		while (frontier.Count > 0) { var cur = frontier.Dequeue(); foreach (var e in enemies) foreach (var a in allies)
-			if (!chained.Contains(a) && IsFlank(cur, a, e)) { result.Add((a, e)); chained.Add(a); frontier.Enqueue(a); } }
+		chainParent = new Dictionary<Unit, Unit>();
+
+		var allies = all.Where(u => u.IsFriendly == attacker.IsFriendly && u != attacker && GodotObject.IsInstanceValid(u)).ToList();
+		var enemies = all.Where(u => u.IsFriendly != attacker.IsFriendly && GodotObject.IsInstanceValid(u)).ToList();
+
+		var chained = new HashSet<Unit> { attacker };
+		var frontier = new Queue<Unit>();
+
+		// Step 1: Find allies that flank the PRIMARY target in a straight line with attacker
+		foreach (var a in allies)
+		{
+			if (IsCollinearFlank(attacker, a, target))
+			{
+				result.Add((a, target));
+				chainParent[a] = attacker;
+				if (chained.Add(a)) frontier.Enqueue(a);
+			}
+		}
+
+		// Step 2: Chain — each chained unit can recruit MORE allies flanking ANY enemy
+		while (frontier.Count > 0)
+		{
+			var cur = frontier.Dequeue();
+			foreach (var e in enemies)
+			{
+				foreach (var a in allies)
+				{
+					if (!chained.Contains(a) && IsCollinearFlank(cur, a, e))
+					{
+						result.Add((a, e));
+						chainParent[a] = cur;
+						chained.Add(a);
+						frontier.Enqueue(a);
+					}
+				}
+			}
+		}
+
 		return result;
 	}
-	static bool IsFlank(Unit a, Unit b, Unit e)
+
+	// Backwards-compat overload
+	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(Unit attacker, Unit target, List<Unit> all)
 	{
-		float dot = (e.GlobalPosition - a.GlobalPosition).Normalized().Dot((e.GlobalPosition - b.GlobalPosition).Normalized());
-		return dot <= -0.3f && Dist(a.GlobalPosition, e.GlobalPosition) <= a.Data.AttackRange && Dist(b.GlobalPosition, e.GlobalPosition) <= b.Data.AttackRange;
+		return GetFlankingPairs(attacker, target, all, out _);
 	}
+
+	/// <summary>
+	/// TRUE flanking: attacker, enemy, and flanker must be COLLINEAR on the grid.
+	/// The enemy must be BETWEEN attacker and flanker on a straight line.
+	/// Straight line = same direction vector (one of 8 grid directions).
+	/// Both attacker and flanker must be within attack range of the enemy.
+	/// </summary>
+	static bool IsCollinearFlank(Unit a, Unit b, Unit e)
+	{
+		// Grid positions
+		Vector2I posA = GridPos(a.GlobalPosition);
+		Vector2I posB = GridPos(b.GlobalPosition);
+		Vector2I posE = GridPos(e.GlobalPosition);
+
+		// Direction from attacker to enemy (normalized to -1/0/+1 per axis)
+		Vector2I dirAE = new Vector2I(
+			Mathf.Sign(posE.X - posA.X),
+			Mathf.Sign(posE.Y - posA.Y));
+
+		// Direction from enemy to flanker
+		Vector2I dirEB = new Vector2I(
+			Mathf.Sign(posB.X - posE.X),
+			Mathf.Sign(posB.Y - posE.Y));
+
+		// Must be a valid direction (not zero — attacker can't be on enemy's tile)
+		if (dirAE.X == 0 && dirAE.Y == 0) return false;
+		if (dirEB.X == 0 && dirEB.Y == 0) return false;
+
+		// COLLINEAR CHECK: direction from A→E must equal direction from E→B
+		// This means A, E, B are on a straight line and E is between A and B
+		if (dirAE != dirEB) return false;
+
+		// Range check: both must be able to reach the enemy
+		if (Dist(a.GlobalPosition, e.GlobalPosition) > a.Data.AttackRange) return false;
+		if (Dist(b.GlobalPosition, e.GlobalPosition) > b.Data.AttackRange) return false;
+
+		return true;
+	}
+
+	static Vector2I GridPos(Vector3 pos)
+	{
+		return new Vector2I(
+			Mathf.RoundToInt(pos.X / TileSize),
+			Mathf.RoundToInt(pos.Z / TileSize));
+	}
+
 	public static int Dist(Vector3 a, Vector3 b)
-	{ int ax=Mathf.RoundToInt(a.X/TileSize),az=Mathf.RoundToInt(a.Z/TileSize),bx=Mathf.RoundToInt(b.X/TileSize),bz=Mathf.RoundToInt(b.Z/TileSize);return Mathf.Max(Mathf.Abs(ax-bx),Mathf.Abs(az-bz)); }
+	{
+		int ax = Mathf.RoundToInt(a.X / TileSize), az = Mathf.RoundToInt(a.Z / TileSize);
+		int bx = Mathf.RoundToInt(b.X / TileSize), bz = Mathf.RoundToInt(b.Z / TileSize);
+		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
+	}
 }
 
 // ============================================================
@@ -244,7 +339,8 @@ public class ComboResult
 	public HandResult HandResult;
 	public Dictionary<Unit, List<(Unit attacker, float multiplier)>> AttackMap = new();
 	public bool HasCombo => HandResult != null && HandResult.Hand > PokerHand.HighCard;
-	public List<Unit> AllFlankingAllies = new(); // For visuals
+	public List<Unit> AllFlankingAllies = new();
+	public Dictionary<Unit, Unit> ChainParentMap = new();
 }
 
 public static class ComboResolver
@@ -255,47 +351,50 @@ public static class ComboResolver
 		foreach (var item in inventory) if (item is Equipment eq) jokers |= eq.JokerEffects;
 		if (attacker.Data.EquippedWeapon != null) jokers |= attacker.Data.EquippedWeapon.JokerEffects;
 		if (attacker.Data.EquippedArmor != null) jokers |= attacker.Data.EquippedArmor.JokerEffects;
-
-		var flankingPairs = FlankingDetector.GetFlankingPairs(attacker, primaryTarget, allUnits);
-
-		// === KEY CHANGE: Only FLANKING ALLIES contribute cards. Attacker does NOT. ===
+ 
+		var flankingPairs = FlankingDetector.GetFlankingPairs(attacker, primaryTarget, allUnits, out var chainParent);
+ 
 		var cardPool = new List<CardEntry>();
 		var unitsInCombo = new HashSet<Unit>();
 		var allFlankAllies = new List<Unit>();
-
-		foreach (var (ally, _) in flankingPairs)
+		var directFlankers = new HashSet<Unit>();
+ 
+		// Non-player attacker contributes their own card
+		if (!attacker.Data.IsPlayerCharacter && attacker.Data.CardRank != CardRank.None)
+			cardPool.Add(new CardEntry { Owner = attacker, Rank = attacker.Data.CardRank, Suit = attacker.Data.CardSuit });
+ 
+		foreach (var (ally, flankedEnemy) in flankingPairs)
 		{
 			if (unitsInCombo.Contains(ally)) continue;
 			if (cardPool.Count >= 5) break;
 			unitsInCombo.Add(ally);
 			allFlankAllies.Add(ally);
+			if (chainParent.TryGetValue(ally, out Unit parent) && parent == attacker)
+				directFlankers.Add(ally);
 			if (ally.Data.CardRank != CardRank.None)
 				cardPool.Add(new CardEntry { Owner = ally, Rank = ally.Data.CardRank, Suit = ally.Data.CardSuit });
 		}
-
-		HandResult handResult = cardPool.Count > 0
-			? PokerHandEvaluator.Evaluate(cardPool, jokers)
-			: HandResult.None();
-
-		// Ensure contributing units are populated
+ 
+		HandResult handResult = cardPool.Count > 0 ? PokerHandEvaluator.Evaluate(cardPool, jokers) : HandResult.None();
 		if (handResult.ContributingUnits.Count == 0 && cardPool.Count > 0)
 		{
 			handResult.ContributingCards = cardPool;
 			handResult.ContributingUnits = cardPool.Select(c => c.Owner).Distinct().ToList();
 		}
-
-		var result = new ComboResult { HandResult = handResult, AllFlankingAllies = allFlankAllies };
+ 
+		var result = new ComboResult { HandResult = handResult, AllFlankingAllies = allFlankAllies, ChainParentMap = chainParent };
 		result.AttackMap[primaryTarget] = new List<(Unit, float)> { (attacker, handResult.DamageMultiplier) };
-
+ 
 		foreach (var (ally, flankedEnemy) in flankingPairs)
 		{
+			if (!directFlankers.Contains(ally)) continue;
 			if (!handResult.ContributingUnits.Contains(ally)) continue;
 			if (!result.AttackMap.ContainsKey(flankedEnemy))
 				result.AttackMap[flankedEnemy] = new List<(Unit, float)>();
 			if (!result.AttackMap[flankedEnemy].Any(x => x.Item1 == ally))
 				result.AttackMap[flankedEnemy].Add((ally, handResult.DamageMultiplier));
 		}
-
+ 
 		return result;
 	}
 }
@@ -686,7 +785,6 @@ public partial class DialogicPipeline : Node
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_timelines/"));
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_characters/"));
 
-		// === THE FIX: Process each mission one by one so "Start" sections don't overwrite each other! ===
 		foreach (string missionPath in campaign.Missions)
 		{
 			StoryData missionData = StoryLoader.GetStoryData(ProjectSettings.GlobalizePath(missionPath));
@@ -703,7 +801,6 @@ public partial class DialogicPipeline : Node
 			{
 				if (campConv.Steps != null && campConv.Steps.Count > 0)
 				{
-					// We pass null for StoryData here because camp convos don't have mission-level default facings
 					WriteTimelineFile(campConv.TimelineName, campConv.Steps, uniqueCampCharacters, new StoryData());
 				}
 			}
@@ -885,7 +982,7 @@ custom_info = {{}}
 					bool canSeamlessJump = false;
 					string targetTimeline = "";
 					
-					if (data.Sections.TryGetValue(targetSection, out StorySection section) && section.Events.Count > 0)
+					if (data.Sections != null && data.Sections.TryGetValue(targetSection, out StorySection section) && section.Events.Count > 0)
 					{
 						if (section.Events[0].Type == "Dialogue") 
 						{
@@ -973,8 +1070,6 @@ custom_info = {{}}
 				foreach (var choice in step.Choices)
 				{
 					dtl.AppendLine($"{indent}- {choice.Text}");
-					
-					// === THE JUICE FIX 1: Inject the choice picked signal immediately! ===
 					dtl.AppendLine($"{indent}\t[signal arg=\"ChoicePicked\"]");
 					
 					if (!string.IsNullOrEmpty(choice.SetFlag))
@@ -1005,15 +1100,25 @@ custom_info = {{}}
 		if (string.IsNullOrWhiteSpace(cond)) return "true";
 		cond = cond.Trim();
 
-		// THE FIX: Changed 'GameManager' to 'StoryBridge' in all three checks!
-		if (cond.StartsWith("Rel:"))
+		// Bond condition: "Bond:Dougal >= 60"
+		if (cond.StartsWith("Bond:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string charName = tokens[0].Split(':')[1];
+				return $"StoryBridge.GetBondXP(\"{charName}\") {tokens[1]} {tokens[2]}";
+			}
+		}
+		// Legacy Rel: condition — now just checks BondXP
+		else if (cond.StartsWith("Rel:"))
 		{
 			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
 			if (tokens.Length == 3)
 			{
 				string[] idParts = tokens[0].Split(':');
-				if (idParts.Length == 3)
-					return $"StoryBridge.GetRelationship(\"{idParts[1]}\", \"{idParts[2]}\") {tokens[1]} {tokens[2]}";
+				string charName = idParts.Length >= 2 ? idParts[1] : idParts[0];
+				return $"StoryBridge.GetBondXP(\"{charName}\") {tokens[1]} {tokens[2]}";
 			}
 		}
 		else if (cond.StartsWith("!Flag:"))
@@ -1025,7 +1130,7 @@ custom_info = {{}}
 			return $"StoryBridge.HasFlag(\"{cond.Substring(5)}\") == true";
 		}
 
-		return cond; 
+		return cond;
 	}
 }
 
@@ -1206,6 +1311,7 @@ public partial class EmotionEffect : Node2D
 
 [FILENAME: GameData.cs]
 
+// GameData.cs
 using Godot;
 using System.Collections.Generic;
 
@@ -1248,29 +1354,32 @@ public class PersistentUnit
 	public int Level = 1;
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
-
+ 
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
 	public int AttackRange;
 	public int Movement;
 	public int XPReward;
-
+ 
 	// === CARD SYSTEM ===
 	public CardRank CardRank = CardRank.None;
 	public CardSuit CardSuit => Profile.CardSuit;
 	public int Speed => Profile.Speed;
-
+ 
 	public bool IsPlayerCharacter = false;
-	public Dictionary<string, int> Relationships = new();
-
+ 
+	// === BOND SYSTEM (replaces old Relationships dict) ===
+	public int BondXP = 0;
+	public const int BondXPMax = 100;
+ 
 	public Equipment EquippedWeapon;
 	public Equipment EquippedArmor;
-
+ 
 	public int GetTotalMaxHP()     => MaxHP     + (EquippedWeapon?.BonusMaxHP   ?? 0) + (EquippedArmor?.BonusMaxHP   ?? 0);
 	public int GetTotalDamage()    => AttackDamage + (EquippedWeapon?.BonusDamage  ?? 0) + (EquippedArmor?.BonusDamage  ?? 0);
 	public int GetTotalMovement()  => Movement  + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
-
+ 
 	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
 		Profile = profile;
@@ -1281,37 +1390,45 @@ public class PersistentUnit
 		Movement = profile.Movement;
 		XPReward = profile.XPReward;
 		IsPlayerCharacter = isPlayer;
-
-		// === FIX: All units start with a base card rank (Two) ===
-		// Without this, CardRank stays None and no cards ever enter the pool,
-		// making the entire poker/combo system invisible to the player.
-		// Player characters always have at least Two.
-		// Companions also start at Two; relationship rank-ups advance them further.
-		CardRank = CardRank.Two;
-
-		if (!IsPlayerCharacter)
-		{
-			Relationships.Add("Respect", 50);
-			Relationships.Add("Agreement", 50);
-			Relationships.Add("Fear", 10);
-		}
+		CardRank = CardRank.None;
+		BondXP = 0;
 	}
-
+ 
 	public void HealBetweenBattles()
 	{
 		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
 		if (CurrentHP <= 0) CurrentHP = 1;
 		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
 	}
-
-	// === RELATIONSHIP → CARD RANK ===
+ 
 	/// <summary>
-	/// When a relationship action rewards a card rank-up, call this.
+	/// Add bond XP (positive or negative). Returns: 1 = rank up, -1 = rank down, 0 = no change.
 	/// </summary>
-	public CardRank AdvanceCardRank()
+	public int AddBondXP(int amount)
 	{
-		CardRank = CardRank.NextRank();
-		return CardRank;
+		if (IsPlayerCharacter) return 0;
+		BondXP += amount;
+ 
+		if (BondXP >= BondXPMax)
+		{
+			BondXP -= BondXPMax;
+			CardRank = CardRank == CardRank.None ? CardRank.Two : CardRank.NextRank();
+			return 1; // Ranked up
+		}
+		else if (BondXP < 0)
+		{
+			if (CardRank == CardRank.None)
+			{
+				BondXP = 0; // Can't go below None
+				return 0;
+			}
+			// Downgrade!
+			CardRank = CardRank.PrevRank();
+			BondXP = BondXPMax + BondXP; // e.g. -10 becomes 90
+			if (BondXP < 0) BondXP = 0;
+			return -1; // Ranked down
+		}
+		return 0;
 	}
 }
 
@@ -1421,15 +1538,15 @@ public static class GameDatabase
 	{
 		Units.Clear(); Items.Clear();
 
-		Units["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 3, 0, UnitFacing.Right, 7, CardSuit.Hearts);
-		Units["Dougal"]  = new UnitProfile("Dougal",  "res://assets/HighRes5.png", 18, 18, 1, 3, 0, UnitFacing.Right, 9, CardSuit.Spades);
-		Units["Pepper"]  = new UnitProfile("Pepper",  "res://assets/rabbits/rabbit.png",       16, 12, 1, 4, 0, UnitFacing.Right, 8, CardSuit.Diamonds);
-		Units["Cobalt"]  = new UnitProfile("Cobalt",  "res://assets/rabbits/rabbit_blue.png",   20, 10, 1, 3, 0, UnitFacing.Right, 6, CardSuit.Clubs);
-		Units["Moss"]    = new UnitProfile("Moss",    "res://assets/rabbits/rabbit_green.png",  22,  9, 1, 3, 0, UnitFacing.Right, 5, CardSuit.Hearts);
-		Units["Ember"]   = new UnitProfile("Ember",   "res://assets/rabbits/rabbit_red.png",    14, 16, 1, 4, 0, UnitFacing.Right, 10, CardSuit.Diamonds);
-		Units["Sunny"]   = new UnitProfile("Sunny",   "res://assets/rabbits/rabbit_yellow.png", 18, 11, 1, 5, 0, UnitFacing.Right, 7, CardSuit.Spades);
-		Units["Guard"]   = new UnitProfile("Goblin",  "res://assets/HighRes4.png", 10, 3, 1, 3, 140, UnitFacing.Right, 4, CardSuit.Clubs);
-		Units["Orc"]     = new UnitProfile("Ogre",    "res://assets/HR_ORC2.png",  25, 8, 1, 2, 120, UnitFacing.Center, 3, CardSuit.Diamonds);
+		Units["Ambrose"] = new UnitProfile("Ambrose", "res://assets/HighRes3.png", 25, 15, 1, 15, 0, UnitFacing.Right, 7, CardSuit.Hearts);
+		Units["Dougal"]  = new UnitProfile("Dougal",  "res://assets/HighRes5.png", 18, 18, 1, 15, 0, UnitFacing.Right, 9, CardSuit.Spades);
+		Units["Pepper"]  = new UnitProfile("Pepper",  "res://assets/rabbits/rabbit.png",       16, 12, 1, 15, 0, UnitFacing.Right, 8, CardSuit.Diamonds);
+		Units["Cobalt"]  = new UnitProfile("Cobalt",  "res://assets/rabbits/rabbit_blue.png",   20, 10, 1, 15, 0, UnitFacing.Right, 6, CardSuit.Clubs);
+		Units["Moss"]    = new UnitProfile("Moss",    "res://assets/rabbits/rabbit_green.png",  22,  9, 1, 15, 0, UnitFacing.Right, 5, CardSuit.Hearts);
+		Units["Ember"]   = new UnitProfile("Ember",   "res://assets/rabbits/rabbit_red.png",    14, 16, 1, 15, 0, UnitFacing.Right, 10, CardSuit.Diamonds);
+		Units["Sunny"]   = new UnitProfile("Sunny",   "res://assets/rabbits/rabbit_yellow.png", 18, 11, 1, 15, 0, UnitFacing.Right, 7, CardSuit.Spades);
+		Units["Guard"]   = new UnitProfile("Goblin",  "res://assets/HighRes4.png", 10, 3, 1, 5, 140, UnitFacing.Right, 4, CardSuit.Clubs);
+		Units["Orc"]     = new UnitProfile("Ogre",    "res://assets/HR_ORC2.png",  25, 8, 1, 4, 120, UnitFacing.Center, 3, CardSuit.Diamonds);
 
 		Items["RustyMail"]=new Equipment("RustyMail","Rusty Mail","res://icons/Rusty Mail.png",EquipSlot.Armor,bonusHp:1);
 		Items["AgilityCloak"]=new Equipment("AgilityCloak","Agility Cloak","res://icons/Agility Cloak.png",EquipSlot.Armor,bonusHp:1,bonusMov:1);
@@ -1484,8 +1601,456 @@ public static class GameDatabase
 ==========================================================================================
 
 
+[FILENAME: GameJuiceUpgrade.cs]
+
+// ============================================================================
+// GameJuiceUpgrade.cs — Drop-in polish system for your Godot 4.5 tactics game
+// 
+// INSTRUCTIONS: Create this as a new file in your scripts/ folder.
+// Then add ONE LINE to GameManager._Ready(), after SetupUnifiedUI():
+//
+//     GameJuiceUpgrade.Install(this);
+//
+// That's it. Everything below auto-wires into your existing systems.
+// ============================================================================
+
+using Godot;
+using System;
+
+public partial class GameJuiceUpgrade : Node
+{
+	private GameManager _gm;
+	private Camera3D _cam;
+	private Godot.Environment _env;
+	private float _time;
+	
+	// Configurable parameters
+	private const float CamBreathAmount = 0.06f;   // Subtle idle breathing
+	private const float CamBreathSpeed = 0.8f;
+
+	/// <summary>
+	/// Call from GameManager._Ready() after SetupUnifiedUI():
+	///     GameJuiceUpgrade.Install(this);
+	/// </summary>
+	public static GameJuiceUpgrade Install(GameManager gm)
+	{
+		var juice = new GameJuiceUpgrade();
+		gm.AddChild(juice);
+		juice._gm = gm;
+		juice._cam = gm.Cam;
+		juice.Name = "GameJuiceUpgrade";
+		
+		juice.SetupPostProcessing();
+		juice.SetupVignetteShader();
+		juice.SetupCameraBreathing();
+		
+		GD.Print("[JUICE] Game juice system installed!");
+		return juice;
+	}
+
+	// ================================================================
+	// 1. POST-PROCESSING — Enhance the built-in Environment
+	// ================================================================
+	// Your ApplyEnvironment already sets up glow and SSAO, but the 
+	// values are conservative. This punches them up significantly.
+
+	private void SetupPostProcessing()
+	{
+		if (_gm.WorldEnv?.Environment == null) return;
+		_env = _gm.WorldEnv.Environment;
+		if (_cam != null) _cam.Environment = _env;
+
+		// --- GLOW: Warm, soft bloom that makes the game feel alive ---
+		_env.GlowEnabled = true;
+		_env.GlowIntensity = 0.6f;        // Down from 0.8 — softer
+		_env.GlowStrength = 1.1f;          // Up from 0.9 — wider spread
+		_env.GlowBloom = 0.08f;            // Tiny bit of bloom on everything
+		_env.GlowHdrThreshold = 0.8f;      // Slightly lower threshold
+		_env.GlowHdrScale = 2.0f;          // Brighter glow on bright objects
+		_env.GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Softlight;
+		// Softlight blends more naturally than Additive — less washed out
+		
+		// Enable multiple glow levels for rich, layered bloom
+		_env.SetGlowLevel(0, 1.0f);
+		_env.SetGlowLevel(1, 1.0f);
+		_env.SetGlowLevel(2, 1.0f);
+		_env.SetGlowLevel(3, 1.0f);
+		_env.SetGlowLevel(4, 0.0f);
+		_env.SetGlowLevel(5, 0.0f);
+		_env.SetGlowLevel(6, 0.0f);
+
+		// --- SSAO: Deeper, richer ambient occlusion ---
+		_env.SsaoEnabled = true;
+		_env.SsaoRadius = 1.5f;            // Up from 1.0 — wider darkening
+		_env.SsaoIntensity = 2.5f;         // Up from 1.5 — more pronounced
+		_env.SsaoLightAffect = 0.15f;      // Slight AO even in direct light
+		_env.SsaoSharpness = 0.7f;         // Sharper edges around objects
+
+		// --- SSIL: Screen-Space Indirect Lighting (Godot 4's gem) ---
+		// This makes light "bounce" off bright surfaces onto nearby dark ones.
+		// Enormously improves the feeling of the scene for almost free.
+		_env.SsilEnabled = true;
+		_env.SsilRadius = 5.0f;
+		_env.SsilIntensity = 0.6f;
+		_env.SsilSharpness = 0.9f;
+		_env.SsilNormalRejection = 1.2f;
+
+		// --- TONEMAPPING: Cinematic color response ---
+		_env.TonemapMode = Godot.Environment.ToneMapper.Aces;
+		_env.TonemapExposure = 1.0f;       // Slightly lower — less blown out
+		_env.TonemapWhite = 6.0f;          // Higher white point — richer highlights
+
+		// --- COLOR ADJUSTMENTS: Warm, slightly saturated storybook look ---
+		_env.AdjustmentEnabled = true;
+		_env.AdjustmentContrast = 1.08f;   // Slightly more contrast
+		_env.AdjustmentSaturation = 1.15f; // Richer colors (storybook feel)
+		_env.AdjustmentBrightness = 1.0f;
+
+		// --- FOG: Subtle atmospheric depth ---
+		_env.FogEnabled = true;
+		_env.FogLightColor = new Color(0.75f, 0.65f, 0.55f); // Warm haze
+		_env.FogLightEnergy = 0.15f;
+		_env.FogDensity = 0.0008f;         // Very subtle
+		_env.FogAerialPerspective = 0.3f;  // Objects fade slightly with distance
+		_env.FogSkyAffect = 0.0f;          // Don't fog the background color
+
+		// --- VOLUMETRIC FOG: Atmospheric light shafts ---
+		_env.VolumetricFogEnabled = true;
+		_env.VolumetricFogDensity = 0.003f;
+		_env.VolumetricFogAlbedo = new Color(0.85f, 0.75f, 0.65f);
+		_env.VolumetricFogEmission = new Color(0.0f, 0.0f, 0.0f);
+		_env.VolumetricFogEmissionEnergy = 0.0f;
+		_env.VolumetricFogAnisotropy = 0.6f;  // Light scatters forward (god rays!)
+	}
+
+	// ================================================================
+	// 2. VIGNETTE — Soft darkened corners via full-screen shader
+	// ================================================================
+	// Godot 4 has no built-in vignette, so we create a lightweight
+	// shader on a ColorRect in a CanvasLayer. Costs almost nothing.
+
+	private ShaderMaterial _vignetteMat;
+	
+	private void SetupVignetteShader()
+	{
+		// Shader source — subtle vignette + very light chromatic aberration
+string shaderCode = @"
+shader_type canvas_item;
+
+uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap;
+uniform float vignette_intensity : hint_range(0.0, 1.0) = 0.35;
+uniform float vignette_softness : hint_range(0.0, 1.0) = 0.45;
+uniform float aberration_amount : hint_range(0.0, 0.01) = 0.001;
+
+void fragment() {
+    vec2 uv = SCREEN_UV;
+    
+    // Vignette
+    float dist = distance(uv, vec2(0.5));
+    float vig = smoothstep(vignette_softness, vignette_softness - 0.25, dist);
+    
+    // Very subtle chromatic aberration at edges only
+    float edge = smoothstep(0.2, 0.7, dist);
+    vec2 offset = (uv - 0.5) * aberration_amount * edge;
+    
+    vec4 col;
+    col.r = texture(screen_texture, uv + offset).r;
+    col.g = texture(screen_texture, uv).g;
+    col.b = texture(screen_texture, uv - offset).b;
+    col.a = 1.0;
+    
+    // Apply vignette as darkening
+    col.rgb *= mix(1.0 - vignette_intensity, 1.0, vig);
+    
+    COLOR = col;
+}
+";
+		Shader vignetteShader = new Shader();
+		vignetteShader.Code = shaderCode;
+
+		_vignetteMat = new ShaderMaterial();
+		_vignetteMat.Shader = vignetteShader;
+		_vignetteMat.SetShaderParameter("vignette_intensity", 0.3f);
+		_vignetteMat.SetShaderParameter("vignette_softness", 0.45f);
+		_vignetteMat.SetShaderParameter("aberration_amount", 0.0008f);
+
+		// Put it on a full-screen ColorRect inside a CanvasLayer
+		CanvasLayer layer = new CanvasLayer { Layer = 80 }; // Below Dialogic but above game
+		_gm.AddChild(layer);
+
+		ColorRect screenQuad = new ColorRect();
+		screenQuad.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		screenQuad.MouseFilter = Control.MouseFilterEnum.Ignore;
+		screenQuad.Material = _vignetteMat;
+		layer.AddChild(screenQuad);
+	}
+
+	/// <summary>
+	/// Call during combat hits to pulse the vignette darker momentarily.
+	/// Usage: GameJuiceUpgrade juice = GetNode<GameJuiceUpgrade>("GameJuiceUpgrade");
+	///        juice.PulseVignette();
+	/// </summary>
+	public void PulseVignette(float intensity = 0.7f, float duration = 0.3f)
+	{
+		if (_vignetteMat == null) return;
+		Tween t = CreateTween();
+		t.TweenMethod(Callable.From<float>(v => _vignetteMat.SetShaderParameter("vignette_intensity", v)),
+			intensity, 0.3f, duration)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+	}
+
+	// ================================================================
+	// 3. CAMERA BREATHING — Subtle idle sway that makes the world alive
+	// ================================================================
+	// A perfectly still camera feels dead. This adds a very gentle
+	// sine-wave drift that's almost imperceptible but makes the
+	// scene feel like it's being viewed through a living eye.
+
+	private Vector3 _camBaseOffset;
+	private bool _breathingEnabled = true;
+
+	private void SetupCameraBreathing()
+	{
+		_camBaseOffset = Vector3.Zero;
+	}
+
+	public override void _Process(double delta)
+	{
+		_time += (float)delta;
+
+		// Camera breathing
+		if (_breathingEnabled && _cam != null && IsInstanceValid(_cam))
+		{
+			// Two overlapping sine waves at different speeds for organic motion
+			float breathY = Mathf.Sin(_time * CamBreathSpeed) * CamBreathAmount;
+			float breathX = Mathf.Sin(_time * CamBreathSpeed * 0.7f) * CamBreathAmount * 0.5f;
+			_cam.HOffset = breathX;
+			_cam.VOffset = breathY;
+		}
+	}
+
+	/// <summary>Disable breathing during attack sequences (it's handled by screenshake)</summary>
+	public void SetBreathing(bool enabled) => _breathingEnabled = enabled;
+
+	// ================================================================
+	// 4. HIT FREEZE — Micro-pause on impact for satisfying hits
+	// ================================================================
+	// The single highest-impact juice technique in game development.
+	// Freeze time for 40-80ms on a hit. Makes attacks feel MASSIVE.
+	// 
+	// Usage: Add to ExecuteSingleAttack right after TakeDamage:
+	//     await GameJuiceUpgrade.HitFreeze(GetTree(), 0.06f);
+
+	public static async System.Threading.Tasks.Task HitFreeze(SceneTree tree, float duration = 0.06f)
+	{
+		tree.Paused = true;
+		
+		// Use a real OS timer, not the game timer (which is paused!)
+		ulong startMs = Time.GetTicksMsec();
+		ulong durationMs = (ulong)(duration * 1000);
+		
+		while (Time.GetTicksMsec() - startMs < durationMs)
+		{
+			await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+		}
+		
+		tree.Paused = false;
+	}
+
+	// ================================================================
+	// 5. SCREEN FLASH — White/red flash on damage for visceral feedback
+	// ================================================================
+	// Usage: GameJuiceUpgrade.ScreenFlash(this, Colors.White, 0.1f);
+
+	public static void ScreenFlash(Node parent, Color color, float duration = 0.15f)
+	{
+		CanvasLayer flashLayer = new CanvasLayer { Layer = 85 };
+		parent.AddChild(flashLayer);
+
+		ColorRect flash = new ColorRect();
+		flash.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		flash.MouseFilter = Control.MouseFilterEnum.Ignore;
+		flash.Color = new Color(color.R, color.G, color.B, 0.3f);
+
+		flashLayer.AddChild(flash);
+
+		Tween t = parent.CreateTween();
+		t.TweenProperty(flash, "color:a", 0.0f, duration)
+			.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+		t.Finished += () => flashLayer.QueueFree();
+	}
+
+	// ================================================================
+	// 6. DUST PARTICLES ON MOVEMENT — Sprite3D leaves a trail
+	// ================================================================
+	// Call from Unit.MoveAlongPath at each step:
+	//     GameJuiceUpgrade.SpawnDustPuff(this, GlobalPosition);
+
+	public static void SpawnDustPuff(Node parent, Vector3 position)
+	{
+		CpuParticles3D dust = new CpuParticles3D
+		{
+			Emitting = true,
+			OneShot = true,
+			Explosiveness = 0.8f,
+			Amount = 6,
+			Lifetime = 0.5f,
+			Direction = Vector3.Up,
+			Spread = 60f,
+			InitialVelocityMin = 0.5f,
+			InitialVelocityMax = 1.5f,
+			Gravity = new Vector3(0, -2f, 0),
+			ScaleAmountMin = 0.5f,
+			ScaleAmountMax = 1.2f,
+		};
+
+		dust.Mesh = new SphereMesh { Radius = 0.08f, Height = 0.16f };
+		dust.MaterialOverride = new StandardMaterial3D
+		{
+			AlbedoColor = new Color(0.6f, 0.5f, 0.4f, 0.6f),
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+			BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled
+		};
+
+		Curve scaleCurve = new Curve();
+		scaleCurve.AddPoint(new Vector2(0, 0.5f));
+		scaleCurve.AddPoint(new Vector2(0.3f, 1.0f));
+		scaleCurve.AddPoint(new Vector2(1, 0));
+		dust.ScaleAmountCurve = scaleCurve;
+
+		parent.GetParent().AddChild(dust);
+		dust.GlobalPosition = position + new Vector3(0, 0.1f, 0);
+
+		// Auto-cleanup
+		parent.GetTree().CreateTimer(0.8f).Timeout += () =>
+		{
+			if (GodotObject.IsInstanceValid(dust)) dust.QueueFree();
+		};
+	}
+
+	// ================================================================
+	// 7. IMPROVED DIRECTIONAL LIGHT — Warm key + cool fill
+	// ================================================================
+	// Call from ApplyEnvironment to add a secondary fill light.
+	// This creates the classic "warm sun + cool sky" dual-light setup
+	// that makes 3D scenes look dramatically better.
+	//
+	// Usage in ApplyEnvironment, after setting MainLight:
+	//     GameJuiceUpgrade.AddFillLight(this, data.Light);
+
+	public static void AddFillLight(Node3D parent, LightingMood mood)
+	{
+		// Remove any previous fill light
+		var old = parent.GetNodeOrNull<DirectionalLight3D>("FillLight");
+		if (old != null) old.QueueFree();
+
+		DirectionalLight3D fill = new DirectionalLight3D { Name = "FillLight" };
+		fill.ShadowEnabled = false; // Fill lights don't need shadows
+
+		switch (mood)
+		{
+			case LightingMood.Noon:
+				fill.LightColor = new Color(0.6f, 0.7f, 1.0f); // Cool sky blue
+				fill.LightEnergy = 0.25f;
+				fill.RotationDegrees = new Vector3(-30, -135, 0); // Opposite to sun
+				break;
+			case LightingMood.Morning:
+				fill.LightColor = new Color(0.5f, 0.6f, 0.9f);
+				fill.LightEnergy = 0.2f;
+				fill.RotationDegrees = new Vector3(-40, -120, 0);
+				break;
+			case LightingMood.Night:
+				fill.LightColor = new Color(0.3f, 0.35f, 0.6f);
+				fill.LightEnergy = 0.15f;
+				fill.RotationDegrees = new Vector3(-50, 150, 0);
+				break;
+			case LightingMood.Indoors:
+				fill.LightColor = new Color(0.7f, 0.6f, 0.5f);
+				fill.LightEnergy = 0.3f;
+				fill.RotationDegrees = new Vector3(-70, 90, 0);
+				break;
+		}
+
+		parent.AddChild(fill);
+	}
+
+	// ================================================================
+	// 8. BOUNCE SCALE ON TURN START — Unit pops when it's their turn
+	// ================================================================
+	// Call this on the active unit when their turn begins.
+	// Usage: GameJuiceUpgrade.BounceUnit(activeUnit);
+
+	public static void BounceUnit(Unit unit)
+	{
+		if (unit == null || !GodotObject.IsInstanceValid(unit)) return;
+		
+		Node3D sprite = unit.GetNodeOrNull<Node3D>("Sprite3D");
+		if (sprite == null) return;
+
+		Vector3 baseScale = sprite.HasMeta("BaseScale") 
+			? sprite.GetMeta("BaseScale").AsVector3() 
+			: sprite.Scale;
+
+		Tween t = unit.CreateTween();
+		// Squash down
+		t.TweenProperty(sprite, "scale", 
+			new Vector3(baseScale.X * 1.2f, baseScale.Y * 0.7f, baseScale.Z * 1.2f), 0.08f)
+			.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		// Stretch up (overshoot)
+		t.TweenProperty(sprite, "scale", 
+			new Vector3(baseScale.X * 0.85f, baseScale.Y * 1.25f, baseScale.Z * 0.85f), 0.12f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		// Settle
+		t.TweenProperty(sprite, "scale", baseScale, 0.15f)
+			.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+	}
+
+	// ================================================================
+	// 9. TILE RIPPLE ON CLICK — Tiles around click point bounce
+	// ================================================================
+	// Call when the player clicks to move or attack:
+	//     GameJuiceUpgrade.TileRipple(clickPosition, _grid, TileSize);
+
+	public static void TileRipple(Vector3 center, Godot.Collections.Dictionary<Vector2I, Tile> grid, float tileSize)
+	{
+		Vector2I centerGrid = new Vector2I(
+			Mathf.RoundToInt(center.X / tileSize),
+			Mathf.RoundToInt(center.Z / tileSize));
+
+		int radius = 3;
+		for (int dx = -radius; dx <= radius; dx++)
+		{
+			for (int dz = -radius; dz <= radius; dz++)
+			{
+				Vector2I pos = centerGrid + new Vector2I(dx, dz);
+				if (!grid.ContainsKey(pos)) continue;
+
+				Tile tile = grid[pos];
+				float dist = Mathf.Sqrt(dx * dx + dz * dz);
+				if (dist > radius) continue;
+
+				float delay = dist * 0.06f;
+				float strength = (1f - dist / radius) * 0.15f;
+
+				Tween t = tile.CreateTween();
+				t.TweenProperty(tile, "position:y", tile.Position.Y + strength, 0.1f)
+					.SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out)
+					.SetDelay(delay);
+				t.TweenProperty(tile, "position:y", tile.Position.Y, 0.25f)
+					.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			}
+		}
+	}
+}
+
+
+==========================================================================================
+
+
 [FILENAME: GameManager.Camp.cs]
 
+// GameManager.Camp.cs
 using Godot;
 using System.Collections.Generic;
 using System.Linq;
@@ -2052,6 +2617,11 @@ public partial class GameManager
 		Color dc = m > 1f ? new Color(1f, 0.85f, 0.1f) : new Color(1f, 0.2f, 0.2f);
 		SpawnFloatingText(et.GlobalPosition, m > 1f ? $"{dmg} ×{m:F2}" : dmg.ToString(), dc, m > 1.5f ? 40 : 30);
 		await et.TakeDamage(dmg, au);
+	 
+		// === BOND GAINS FROM COMBAT ===
+		if (GodotObject.IsInstanceValid(au))
+			ProcessCombatBondGains(au, et, dmg * 10);
+	 
 		if (!GodotObject.IsInstanceValid(au)) return;
 		for (int i = 0; i < 5; i++) { Cam.HOffset = (float)GD.RandRange(-0.12f, 0.12f); Cam.VOffset = (float)GD.RandRange(-0.12f, 0.12f); await ToSignal(GetTree().CreateTimer(0.03f), "timeout"); }
 		Cam.HOffset = 0; Cam.VOffset = 0;
@@ -2191,13 +2761,18 @@ public partial class GameManager
 	// === DEATH ===
 	private async void HandleUnitDeath(Unit d)
 	{
-		Input.SetCustomMouseCursor(null); _units.Remove(d); _initiative.Remove(d);
+		Input.SetCustomMouseCursor(null);
+		_units.Remove(d);
+		_initiative.Remove(d);
+		RefreshInitiativeUI();
+	 
 		if (!_units.Any(u => GodotObject.IsInstanceValid(u) && !u.IsFriendly))
-		{ 
-			_currentState = State.Cutscene; ClearMovementRange(); ClearHover(); DeselectUnit(); ShowActions(false); _comboVisualizer?.ClearVisuals(); HideInitiativeBar();
-			await ToSignal(GetTree().CreateTimer(0.4f), "timeout"); 
-			await ClearEnvironmentSceneryAsync(); 
-			AdvanceScript(); 
+		{
+			_currentState = State.Cutscene; ClearMovementRange(); ClearHover(); DeselectUnit();
+			ShowActions(false); _comboVisualizer?.ClearVisuals(); HideInitiativeBar();
+			await ToSignal(GetTree().CreateTimer(0.4f), "timeout");
+			await ClearEnvironmentSceneryAsync();
+			AdvanceScript();
 		}
 	}
 
@@ -2232,49 +2807,113 @@ public partial class GameManager
 		if (_pulseTween != null && _pulseTween.IsValid()) { _pulseTween.Kill(); _pulseTween = null; }
 		if (_initiativeBar != null && IsInstanceValid(_initiativeBar)) { Tween h = CreateTween(); h.TweenProperty(_initiativeBar, "position:y", -200f, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); h.Finished += () => { if (IsInstanceValid(_initiativeBar)) _initiativeBar.Visible = false; }; }
 	}
+	
 	private void RefreshInitiativeUI()
 	{
-		if (_initiativeBar == null) BuildInitiativeBar(); if (_initiativeBar == null) return;
-		_initiativeBar.Visible = true; _initiativeBar.Position = new Vector2(0, 8);
+		if (_initiativeBar == null) BuildInitiativeBar();
+		if (_initiativeBar == null) return;
+		_initiativeBar.Visible = true;
+		_initiativeBar.Position = new Vector2(0, 8);
 		if (_pulseTween != null && _pulseTween.IsValid()) { _pulseTween.Kill(); _pulseTween = null; }
 		foreach (Node c in _initiativeBar.GetChildren()) c.QueueFree();
-		var order = _initiative.AllInOrder(); int ci = order.IndexOf(_initiative.Current);
-		for (int i = 0; i < Mathf.Min(order.Count, 8); i++)
+	 
+		var order = _initiative.AllInOrder();
+		int ci = order.IndexOf(_initiative.Current);
+	 
+		for (int i = 0; i < order.Count; i++)
 		{
-			int idx = (ci + i) % Mathf.Max(1, order.Count); if (idx < 0 || idx >= order.Count) continue;
-			Unit u = order[idx]; if (!GodotObject.IsInstanceValid(u)) continue;
-			bool ic = i == 0; float pw = ic ? 110 : 80; float ph = ic ? 155 : 110;
-			Color bc = u.IsFriendly ? new Color(0.3f, 0.85f, 1f) : new Color(1f, 0.35f, 0.35f); if (ic) bc = new Color(1f, 0.92f, 0.3f);
-			PanelContainer pip = new() { CustomMinimumSize = new Vector2(pw, ph) }; if (MasterTheme != null) pip.Theme = MasterTheme;
-			int bw = ic ? 5 : 3;
-			pip.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = ic ? new Color(0.12f, 0.1f, 0.06f, 0.97f) : new Color(0.06f, 0.06f, 0.09f, 0.95f),
-				CornerRadiusTopLeft=12,CornerRadiusTopRight=12,CornerRadiusBottomLeft=12,CornerRadiusBottomRight=12,
-				BorderWidthBottom=bw,BorderWidthTop=bw,BorderWidthLeft=bw,BorderWidthRight=bw, BorderColor=bc,
-				ShadowSize=ic?16:6, ShadowColor=new Color(bc.R,bc.G,bc.B,ic?0.7f:0.4f), ShadowOffset=new Vector2(0,ic?5:2),
-				ContentMarginLeft=6,ContentMarginRight=6,ContentMarginTop=6,ContentMarginBottom=6 });
-			VBoxContainer vb = new() { Alignment = BoxContainer.AlignmentMode.Center }; vb.AddThemeConstantOverride("separation", 3); vb.SetAnchorsPreset(Control.LayoutPreset.FullRect); pip.AddChild(vb);
+			int idx = (ci + i) % Mathf.Max(1, order.Count);
+			if (idx < 0 || idx >= order.Count) continue;
+			Unit u = order[idx];
+			if (!GodotObject.IsInstanceValid(u)) continue;
+	 
+			bool isActive = i == 0;
+			float pw = isActive ? 120 : 76;
+			float ph = isActive ? 165 : 105;
+			Color teamColor = u.IsFriendly ? new Color(0.2f, 0.75f, 1f) : new Color(1f, 0.3f, 0.3f);
+			Color borderColor = isActive ? new Color(1f, 0.9f, 0.3f) : teamColor;
+	 
+			PanelContainer pip = new() { CustomMinimumSize = new Vector2(pw, ph) };
+			if (MasterTheme != null) pip.Theme = MasterTheme;
+			pip.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+			{
+				BgColor = isActive ? new Color(0.14f, 0.12f, 0.06f, 0.98f) : new Color(0.05f, 0.05f, 0.08f, 0.95f),
+				CornerRadiusTopLeft = 10, CornerRadiusTopRight = 10, CornerRadiusBottomLeft = 10, CornerRadiusBottomRight = 10,
+				BorderWidthBottom = isActive ? 4 : 2, BorderWidthTop = isActive ? 4 : 2, BorderWidthLeft = isActive ? 4 : 2, BorderWidthRight = isActive ? 4 : 2,
+				BorderColor = borderColor,
+				ShadowSize = isActive ? 14 : 4, ShadowColor = new Color(borderColor.R, borderColor.G, borderColor.B, isActive ? 0.6f : 0.25f), ShadowOffset = new Vector2(0, isActive ? 4 : 2),
+				ContentMarginLeft = 5, ContentMarginRight = 5, ContentMarginTop = 5, ContentMarginBottom = 5
+			});
+	 
+			VBoxContainer vb = new() { Alignment = BoxContainer.AlignmentMode.Center };
+			vb.AddThemeConstantOverride("separation", 2);
+			vb.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			pip.AddChild(vb);
+	 
+			if (isActive)
+			{
+				Label turnBadge = new Label { Text = u.IsFriendly ? "▶ YOUR TURN" : "▶ ENEMY", HorizontalAlignment = HorizontalAlignment.Center };
+				turnBadge.AddThemeFontSizeOverride("font_size", 10);
+				turnBadge.AddThemeColorOverride("font_color", new Color(1f, 0.9f, 0.4f));
+				turnBadge.AddThemeConstantOverride("outline_size", 3);
+				turnBadge.AddThemeColorOverride("font_outline_color", Colors.Black);
+				if (_fantasyFont != null) turnBadge.AddThemeFontOverride("font", _fantasyFont);
+				vb.AddChild(turnBadge);
+			}
+	 
 			Texture2D st = GD.Load<Texture2D>(u.Data.Profile.SpritePath);
-			if (st != null) vb.AddChild(new TextureRect { Texture = st, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(pw - 14, ic ? 65 : 42), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
-			string dn = u.Data.Profile.Name; if (!ic && dn.Length > 7) dn = dn.Substring(0, 6) + ".";
+			if (st != null)
+				vb.AddChild(new TextureRect { Texture = st, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(pw - 12, isActive ? 60 : 38), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+	 
+			string dn = u.Data.Profile.Name;
+			if (!isActive && dn.Length > 7) dn = dn.Substring(0, 6) + ".";
 			Label nl = new() { Text = dn, HorizontalAlignment = HorizontalAlignment.Center };
-			nl.AddThemeFontSizeOverride("font_size", ic ? 16 : 12); nl.AddThemeColorOverride("font_color", ic ? new Color(1f, 0.95f, 0.7f) : bc);
-			nl.AddThemeColorOverride("font_outline_color", Colors.Black); nl.AddThemeConstantOverride("outline_size", ic ? 6 : 3);
-			if (_fantasyFont != null) nl.AddThemeFontOverride("font", _fantasyFont); vb.AddChild(nl);
-			float ch = ic ? 40 : 28; float cw = ch * 0.7f;
+			nl.AddThemeFontSizeOverride("font_size", isActive ? 14 : 11);
+			nl.AddThemeColorOverride("font_color", isActive ? new Color(1f, 0.95f, 0.8f) : new Color(0.9f, 0.9f, 0.9f));
+			nl.AddThemeConstantOverride("outline_size", isActive ? 5 : 3);
+			nl.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) nl.AddThemeFontOverride("font", _fantasyFont);
+			vb.AddChild(nl);
+	 
+			float ch = isActive ? 36 : 24; float cw = ch * 0.7f;
 			if (u.IsFriendly && u.Data.CardRank != CardRank.None)
-			{ string cp = CardImageHelper.GetCardImagePath(u.Data.CardSuit, u.Data.CardRank); Texture2D ct = !string.IsNullOrEmpty(cp) ? GD.Load<Texture2D>(cp) : null;
-				if (ct != null) vb.AddChild(new TextureRect { Texture = ct, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter }); }
-			else if (!u.IsFriendly) { Texture2D bt = GD.Load<Texture2D>(CardImageHelper.GetCardBackPath(i % 9));
-				if (bt != null) vb.AddChild(new TextureRect { Texture = bt, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter }); }
+			{
+				string cp = CardImageHelper.GetCardImagePath(u.Data.CardSuit, u.Data.CardRank);
+				Texture2D ct = !string.IsNullOrEmpty(cp) ? GD.Load<Texture2D>(cp) : null;
+				if (ct != null) vb.AddChild(new TextureRect { Texture = ct, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			}
+			else if (!u.IsFriendly)
+			{
+				Texture2D bt = GD.Load<Texture2D>(CardImageHelper.GetCardBackPath(i % 9));
+				if (bt != null) vb.AddChild(new TextureRect { Texture = bt, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cw, ch), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			}
+			else
+			{
+				Label noCard = new Label { Text = "?", HorizontalAlignment = HorizontalAlignment.Center };
+				noCard.AddThemeFontSizeOverride("font_size", isActive ? 18 : 13);
+				noCard.AddThemeColorOverride("font_color", new Color(0.35f, 0.35f, 0.4f));
+				if (_fantasyFont != null) noCard.AddThemeFontOverride("font", _fantasyFont);
+				vb.AddChild(noCard);
+			}
+	 
+			vb.AddChild(new ColorRect { Color = teamColor, CustomMinimumSize = new Vector2(0, 3), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill });
 			_initiativeBar.AddChild(pip);
-			pip.PivotOffset = new Vector2(pw / 2f, ph / 2f); pip.Scale = Vector2.Zero;
-			float ed = i * 0.06f;
-			CreateTween().TweenProperty(pip, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(ed);
-			if (ic) { _pulseTween = CreateTween().SetLoops(); _pulseTween.TweenInterval(ed + 0.4f);
-				_pulseTween.TweenProperty(pip, "scale", new Vector2(1.07f, 1.07f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
-				_pulseTween.TweenProperty(pip, "scale", new Vector2(0.96f, 0.96f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut); }
+	 
+			pip.PivotOffset = new Vector2(pw / 2f, ph / 2f);
+			pip.Scale = Vector2.Zero;
+			CreateTween().TweenProperty(pip, "scale", Vector2.One, 0.25f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(i * 0.04f);
+	 
+			if (isActive)
+			{
+				_pulseTween = CreateTween().SetLoops();
+				_pulseTween.TweenInterval(i * 0.04f + 0.3f);
+				_pulseTween.TweenProperty(pip, "scale", new Vector2(1.06f, 1.06f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+				_pulseTween.TweenProperty(pip, "scale", new Vector2(0.97f, 0.97f), 0.5f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
+			}
 		}
 	}
+
 	private void BuildInitiativeBar()
 	{ _initiativeBar = new HBoxContainer(); _initiativeBar.SetAnchorsPreset(Control.LayoutPreset.TopWide); _initiativeBar.Position = new Vector2(0, 8); _initiativeBar.AddThemeConstantOverride("separation", 12); _initiativeBar.SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter;
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_initiativeBar); else AddChild(_initiativeBar); }
@@ -2630,8 +3269,11 @@ public partial class GameManager
 								patchMat.NormalTexture = gridNormalTex;
 							}
 
-							Color baseDirt = new Color(0.3f, 0.22f, 0.15f); 
-							patchMat.AlbedoColor = baseDirt.Lerp(new Color(0.15f, 0.1f, 0.05f), rawWorldNoise); 
+							// Sample the actual grid tile color so outer terrain matches perfectly
+							Color baseDirt = new Color(0.3f, 0.22f, 0.15f);
+							if (_grid.Count > 0 && _grid.Values.First().GetNodeOrNull<MeshInstance3D>("MeshInstance3D")?.GetSurfaceOverrideMaterial(0) is StandardMaterial3D gridMat)
+								baseDirt = gridMat.AlbedoColor;
+							patchMat.AlbedoColor = baseDirt.Lerp(baseDirt.Darkened(0.15f), rawWorldNoise);
 							dirtCube.MaterialOverride = patchMat;
 
 							dirtCube.Position = new Vector3(subX, targetH - (totalCubeHeight / 2f), subZ);
@@ -2877,7 +3519,7 @@ public partial class GameManager
 
 [FILENAME: GameManager.UI.cs]
 
-// GameManager.UI.cs — Stats panel overhaul: portrait, HP bar, glowing orbs
+// GameManager.UI.cs — Stats panel, bond notifications, card celebrations
 using Godot;
 using System.Collections.Generic;
 using System.Linq;
@@ -2885,7 +3527,7 @@ using System.Threading.Tasks;
 
 public partial class GameManager
 {
-	// === STATS PANEL (replaces text-only StatsLabel for unit display) ===
+	// === STATS PANEL ===
 	private PanelContainer _statsPanel;
 	private TextureRect _statsPortrait;
 	private Label _statsName;
@@ -2895,6 +3537,7 @@ public partial class GameManager
 	private PanelContainer _statsAttackOrb;
 	private Label _statsMoveLabel;
 	private Label _statsAttackLabel;
+	private PanelContainer _activeTooltip;
 
 	private void SetupUnifiedUI()
 	{
@@ -2941,8 +3584,6 @@ public partial class GameManager
 		MasterTheme.SetFontSize("font_size", "Label", 22); MasterTheme.SetColor("font_color", "Label", new Color(0.95f, 0.95f, 0.95f, 1f));
 
 		if (ActionMenu != null) ActionMenu.Theme = MasterTheme;
-
-		// Hide the old text-only StatsLabel — we'll use our new panel
 		if (StatsLabel != null) StatsLabel.Visible = false;
 
 		Button[] buttons = { AttackButton, EndTurnButton, PartyButton };
@@ -2958,13 +3599,8 @@ public partial class GameManager
 		ItemSlotStyle = new StyleBoxFlat { BgColor = new Color(0.12f, 0.12f, 0.15f, 0.95f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2, BorderColor = new Color(0.25f, 0.25f, 0.3f, 1f) };
 		ItemSlotHoverStyle = (StyleBoxFlat)ItemSlotStyle.Duplicate(); ItemSlotHoverStyle.BgColor = new Color(0.2f, 0.2f, 0.25f, 1f); ItemSlotHoverStyle.BorderColor = new Color(1f, 0.85f, 0.3f, 1f);
 
-		// Build new stats panel
 		BuildStatsPanel();
 	}
-
-	// ============================================================
-	// STATS PANEL — Modern RPG style with portrait, HP bar, orbs
-	// ============================================================
 
 	private void BuildStatsPanel()
 	{
@@ -2978,30 +3614,19 @@ public partial class GameManager
 			ShadowSize = 10, ShadowColor = new Color(0, 0, 0, 0.6f), ShadowOffset = new Vector2(0, 5),
 			ContentMarginLeft = 12, ContentMarginRight = 12, ContentMarginTop = 10, ContentMarginBottom = 10
 		});
-
 		if (MasterTheme != null) _statsPanel.Theme = MasterTheme;
 
-		// Layout: [Portrait | Info Column]
 		HBoxContainer mainRow = new HBoxContainer();
 		mainRow.AddThemeConstantOverride("separation", 12);
 		_statsPanel.AddChild(mainRow);
 
-		// Portrait
-		_statsPortrait = new TextureRect
-		{
-			ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-			StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
-			CustomMinimumSize = new Vector2(70, 80),
-			SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
-		};
+		_statsPortrait = new TextureRect { ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(70, 80), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter };
 		mainRow.AddChild(_statsPortrait);
 
-		// Info column
 		VBoxContainer infoCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
 		infoCol.AddThemeConstantOverride("separation", 6);
 		mainRow.AddChild(infoCol);
 
-		// Name + Level row
 		_statsName = new Label { Text = "—", HorizontalAlignment = HorizontalAlignment.Left };
 		_statsName.AddThemeFontSizeOverride("font_size", 22);
 		_statsName.AddThemeColorOverride("font_outline_color", Colors.Black);
@@ -3009,22 +3634,10 @@ public partial class GameManager
 		if (_fantasyFont != null) _statsName.AddThemeFontOverride("font", _fantasyFont);
 		infoCol.AddChild(_statsName);
 
-		// HP Bar
 		MarginContainer hpMargin = new MarginContainer { CustomMinimumSize = new Vector2(0, 28) };
 		_statsHpBar = new ProgressBar { CustomMinimumSize = new Vector2(0, 28), ShowPercentage = false, MaxValue = 100, Value = 100 };
-		_statsHpBar.AddThemeStyleboxOverride("background", new StyleBoxFlat
-		{
-			BgColor = new Color(0.15f, 0.05f, 0.05f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6,
-			CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6,
-			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
-			BorderColor = new Color(0.3f, 0.1f, 0.1f)
-		});
-		_statsHpBar.AddThemeStyleboxOverride("fill", new StyleBoxFlat
-		{
-			BgColor = new Color(0.2f, 0.85f, 0.3f), CornerRadiusTopLeft = 4, CornerRadiusTopRight = 4,
-			CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4
-		});
-
+		_statsHpBar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.15f, 0.05f, 0.05f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6, BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2, BorderColor = new Color(0.3f, 0.1f, 0.1f) });
+		_statsHpBar.AddThemeStyleboxOverride("fill", new StyleBoxFlat { BgColor = new Color(0.2f, 0.85f, 0.3f), CornerRadiusTopLeft = 4, CornerRadiusTopRight = 4, CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4 });
 		_statsHpLabel = new Label { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 		_statsHpLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		_statsHpLabel.AddThemeFontSizeOverride("font_size", 15);
@@ -3032,204 +3645,99 @@ public partial class GameManager
 		_statsHpLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
 		if (_fantasyFont != null) _statsHpLabel.AddThemeFontOverride("font", _fantasyFont);
 		_statsHpBar.AddChild(_statsHpLabel);
-
 		hpMargin.AddChild(_statsHpBar);
 		infoCol.AddChild(hpMargin);
 
-		// Action orbs row: [Move Orb] [Attack Orb]
 		HBoxContainer orbRow = new HBoxContainer();
 		orbRow.AddThemeConstantOverride("separation", 16);
 		infoCol.AddChild(orbRow);
 
-		// Move orb
 		VBoxContainer moveCol = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
 		moveCol.AddThemeConstantOverride("separation", 2);
 		_statsMoveOrb = CreateOrbIndicator(new Color(0.2f, 0.8f, 1.0f));
 		_statsMoveLabel = new Label { Text = "MOVE", HorizontalAlignment = HorizontalAlignment.Center };
-		_statsMoveLabel.AddThemeFontSizeOverride("font_size", 11);
-		_statsMoveLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
-		_statsMoveLabel.AddThemeConstantOverride("outline_size", 3);
+		_statsMoveLabel.AddThemeFontSizeOverride("font_size", 11); _statsMoveLabel.AddThemeColorOverride("font_outline_color", Colors.Black); _statsMoveLabel.AddThemeConstantOverride("outline_size", 3);
 		if (_fantasyFont != null) _statsMoveLabel.AddThemeFontOverride("font", _fantasyFont);
-		moveCol.AddChild(_statsMoveOrb);
-		moveCol.AddChild(_statsMoveLabel);
-		orbRow.AddChild(moveCol);
+		moveCol.AddChild(_statsMoveOrb); moveCol.AddChild(_statsMoveLabel); orbRow.AddChild(moveCol);
 
-		// Attack orb
 		VBoxContainer atkCol = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
 		atkCol.AddThemeConstantOverride("separation", 2);
 		_statsAttackOrb = CreateOrbIndicator(new Color(1.0f, 0.5f, 0.2f));
 		_statsAttackLabel = new Label { Text = "ATTACK", HorizontalAlignment = HorizontalAlignment.Center };
-		_statsAttackLabel.AddThemeFontSizeOverride("font_size", 11);
-		_statsAttackLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
-		_statsAttackLabel.AddThemeConstantOverride("outline_size", 3);
+		_statsAttackLabel.AddThemeFontSizeOverride("font_size", 11); _statsAttackLabel.AddThemeColorOverride("font_outline_color", Colors.Black); _statsAttackLabel.AddThemeConstantOverride("outline_size", 3);
 		if (_fantasyFont != null) _statsAttackLabel.AddThemeFontOverride("font", _fantasyFont);
-		atkCol.AddChild(_statsAttackOrb);
-		atkCol.AddChild(_statsAttackLabel);
-		orbRow.AddChild(atkCol);
+		atkCol.AddChild(_statsAttackOrb); atkCol.AddChild(_statsAttackLabel); orbRow.AddChild(atkCol);
 
 		_statsPanel.Visible = false;
-
-		// Position it where StatsLabel was
 		if (StatsLabel != null && StatsLabel.GetParent() != null)
 		{
 			StatsLabel.GetParent().AddChild(_statsPanel);
 			_statsPanel.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
 			_statsPanel.Position = new Vector2(20, -180);
 		}
-		else
-		{
-			AddChild(_statsPanel);
-		}
+		else AddChild(_statsPanel);
 	}
 
 	private PanelContainer CreateOrbIndicator(Color litColor)
 	{
 		PanelContainer orb = new PanelContainer { CustomMinimumSize = new Vector2(32, 32) };
-		orb.AddThemeStyleboxOverride("panel", new StyleBoxFlat
-		{
-			BgColor = litColor,
-			CornerRadiusTopLeft = 16, CornerRadiusTopRight = 16,
-			CornerRadiusBottomLeft = 16, CornerRadiusBottomRight = 16,
-			BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2,
-			BorderColor = new Color(1f, 1f, 1f, 0.3f),
-			ShadowSize = 8,
-			ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f),
-			ShadowOffset = new Vector2(0, 2)
-		});
+		orb.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = litColor, CornerRadiusTopLeft = 16, CornerRadiusTopRight = 16, CornerRadiusBottomLeft = 16, CornerRadiusBottomRight = 16, BorderWidthBottom = 2, BorderWidthTop = 2, BorderWidthLeft = 2, BorderWidthRight = 2, BorderColor = new Color(1f, 1f, 1f, 0.3f), ShadowSize = 8, ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f), ShadowOffset = new Vector2(0, 2) });
 		return orb;
 	}
 
 	private void SetOrbLit(PanelContainer orb, Color litColor, bool isLit)
 	{
 		StyleBoxFlat style = (StyleBoxFlat)orb.GetThemeStylebox("panel");
-		if (isLit)
-		{
-			style.BgColor = litColor;
-			style.ShadowSize = 8;
-			style.ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f);
-			style.BorderColor = new Color(1f, 1f, 1f, 0.3f);
-		}
-		else
-		{
-			style.BgColor = new Color(0.12f, 0.12f, 0.15f);
-			style.ShadowSize = 0;
-			style.BorderColor = new Color(0.2f, 0.2f, 0.25f);
-		}
+		if (isLit) { style.BgColor = litColor; style.ShadowSize = 8; style.ShadowColor = new Color(litColor.R, litColor.G, litColor.B, 0.6f); style.BorderColor = new Color(1f, 1f, 1f, 0.3f); }
+		else { style.BgColor = new Color(0.12f, 0.12f, 0.15f); style.ShadowSize = 0; style.BorderColor = new Color(0.2f, 0.2f, 0.25f); }
 	}
-
-	// ============================================================
-	// UPDATE STATS UI — visual panel update
-	// ============================================================
 
 	private void UpdateStatsUI()
 	{
 		if (_statsPanel == null) return;
-
 		if (_selectedUnit != null && _selectedUnit.Data != null && GodotObject.IsInstanceValid(_selectedUnit))
 		{
 			_statsPanel.Visible = true;
 			var d = _selectedUnit.Data;
-
-			// Portrait
-			Texture2D tex = GD.Load<Texture2D>(d.Profile.SpritePath);
-			_statsPortrait.Texture = tex;
-
-			// Name + Level
-			string levelColor = _selectedUnit.IsFriendly ? "gold" : "#ff6666";
+			_statsPortrait.Texture = GD.Load<Texture2D>(d.Profile.SpritePath);
 			_statsName.Text = $"{d.Profile.Name}  Lv.{d.Level}";
-			_statsName.AddThemeColorOverride("font_color",
-				_selectedUnit.IsFriendly ? new Color(1f, 0.95f, 0.8f) : new Color(1f, 0.5f, 0.5f));
-
-			// HP Bar
-			int maxHp = d.GetTotalMaxHP();
-			_statsHpBar.MaxValue = maxHp;
-
-			// Animate HP bar smoothly
-			CreateTween().TweenProperty(_statsHpBar, "value", (double)d.CurrentHP, 0.2f)
-				.SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+			_statsName.AddThemeColorOverride("font_color", _selectedUnit.IsFriendly ? new Color(1f, 0.95f, 0.8f) : new Color(1f, 0.5f, 0.5f));
+			int maxHp = d.GetTotalMaxHP(); _statsHpBar.MaxValue = maxHp;
+			CreateTween().TweenProperty(_statsHpBar, "value", (double)d.CurrentHP, 0.2f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 			_statsHpLabel.Text = $"HP  {d.CurrentHP} / {maxHp}";
-
-			// Color HP bar based on ratio
 			float ratio = maxHp > 0 ? (float)d.CurrentHP / maxHp : 0;
-			Color hpColor;
-			if (ratio > 0.6f) hpColor = new Color(0.2f, 0.85f, 0.3f);
-			else if (ratio > 0.3f) hpColor = new Color(0.9f, 0.75f, 0.15f);
-			else hpColor = new Color(0.9f, 0.2f, 0.2f);
+			Color hpColor = ratio > 0.6f ? new Color(0.2f, 0.85f, 0.3f) : ratio > 0.3f ? new Color(0.9f, 0.75f, 0.15f) : new Color(0.9f, 0.2f, 0.2f);
 			((StyleBoxFlat)_statsHpBar.GetThemeStylebox("fill")).BgColor = hpColor;
-
-			// Orbs
 			if (_selectedUnit.IsFriendly)
 			{
 				SetOrbLit(_statsMoveOrb, new Color(0.2f, 0.8f, 1.0f), !_selectedUnit.HasMoved);
 				SetOrbLit(_statsAttackOrb, new Color(1.0f, 0.5f, 0.2f), !_selectedUnit.HasAttacked);
-				_statsMoveLabel.AddThemeColorOverride("font_color",
-					_selectedUnit.HasMoved ? new Color(0.3f, 0.3f, 0.35f) : new Color(0.5f, 0.9f, 1f));
-				_statsAttackLabel.AddThemeColorOverride("font_color",
-					_selectedUnit.HasAttacked ? new Color(0.3f, 0.3f, 0.35f) : new Color(1f, 0.7f, 0.4f));
-				_statsMoveOrb.Visible = true; _statsAttackOrb.Visible = true;
-				_statsMoveLabel.Visible = true; _statsAttackLabel.Visible = true;
+				_statsMoveLabel.AddThemeColorOverride("font_color", _selectedUnit.HasMoved ? new Color(0.3f, 0.3f, 0.35f) : new Color(0.5f, 0.9f, 1f));
+				_statsAttackLabel.AddThemeColorOverride("font_color", _selectedUnit.HasAttacked ? new Color(0.3f, 0.3f, 0.35f) : new Color(1f, 0.7f, 0.4f));
+				_statsMoveOrb.Visible = true; _statsAttackOrb.Visible = true; _statsMoveLabel.Visible = true; _statsAttackLabel.Visible = true;
 			}
-			else
-			{
-				// Enemy — hide orbs
-				_statsMoveOrb.Visible = false; _statsAttackOrb.Visible = false;
-				_statsMoveLabel.Visible = false; _statsAttackLabel.Visible = false;
-			}
-
-			// Juicy pop
+			else { _statsMoveOrb.Visible = false; _statsAttackOrb.Visible = false; _statsMoveLabel.Visible = false; _statsAttackLabel.Visible = false; }
 			_statsPanel.PivotOffset = _statsPanel.Size / 2;
 			Tween pop = CreateTween();
 			pop.TweenProperty(_statsPanel, "scale", new Vector2(1.04f, 1.04f), 0.08f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 			pop.TweenProperty(_statsPanel, "scale", Vector2.One, 0.12f).SetTrans(Tween.TransitionType.Sine);
 		}
-		else
-		{
-			_statsPanel.Visible = false;
-		}
+		else _statsPanel.Visible = false;
 	}
-
-	// ============================================================
-	// SHOW UNIT INFO (clickable info for non-selected units)
-	// ============================================================
 
 	private void ShowUnitInfo(Unit u)
 	{
 		if (u == null || u.Data == null) return;
-
-		// Temporarily set as selected for display, then clear
-		var prev = _selectedUnit;
-		_selectedUnit = u;
-		UpdateStatsUI();
-		_selectedUnit = prev;
+		var prev = _selectedUnit; _selectedUnit = u; UpdateStatsUI(); _selectedUnit = prev;
 	}
-
-	// ============================================================
-	// ACTIONS UI (unchanged logic, kept)
-	// ============================================================
 
 	private void ShowActions(bool show)
 	{
-		if (show && _selectedUnit != null)
-		{
-			AttackButton.Text = "Attack";
-			AttackButton.Disabled = _selectedUnit.HasAttacked;
-		}
-
+		if (show && _selectedUnit != null) { AttackButton.Text = "Attack"; AttackButton.Disabled = _selectedUnit.HasAttacked; }
 		if (_uiTween != null && _uiTween.IsValid()) _uiTween.Kill();
-		_uiTween = CreateTween();
-		ActionMenu.PivotOffset = ActionMenu.Size / 2;
-
-		if (show)
-		{
-			if (!ActionMenu.Visible) ActionMenu.Scale = new Vector2(0.01f, 0.01f);
-			ActionMenu.Visible = true;
-			_uiTween.TweenProperty(ActionMenu, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		}
-		else
-		{
-			_uiTween.TweenProperty(ActionMenu, "scale", new Vector2(0.01f, 0.01f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			_uiTween.Finished += () => ActionMenu.Visible = false;
-		}
+		_uiTween = CreateTween(); ActionMenu.PivotOffset = ActionMenu.Size / 2;
+		if (show) { if (!ActionMenu.Visible) ActionMenu.Scale = new Vector2(0.01f, 0.01f); ActionMenu.Visible = true; _uiTween.TweenProperty(ActionMenu, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out); }
+		else { _uiTween.TweenProperty(ActionMenu, "scale", new Vector2(0.01f, 0.01f), 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); _uiTween.Finished += () => ActionMenu.Visible = false; }
 	}
 
 	private void AddButtonJuice(Button btn)
@@ -3246,23 +3754,11 @@ public partial class GameManager
 		else if (_selectedUnit != null && !_selectedUnit.HasAttacked) EnterAttackMode();
 	}
 
-	private void EnterAttackMode()
-	{
-		_currentState = State.SelectingAttackTarget;
-		AttackButton.Text = "Cancel";
-		if (AttackCursorIcon != null) Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16));
-	}
-
-	private void CancelAttackMode()
-	{
-		_currentState = State.PlayerTurn;
-		AttackButton.Text = "Attack";
-		ShowActions(true);
-		Input.SetCustomMouseCursor(null);
-	}
+	private void EnterAttackMode() { _currentState = State.SelectingAttackTarget; AttackButton.Text = "Cancel"; if (AttackCursorIcon != null) Input.SetCustomMouseCursor(AttackCursorIcon, Input.CursorShape.Arrow, new Vector2(16, 16)); }
+	private void CancelAttackMode() { _currentState = State.PlayerTurn; AttackButton.Text = "Attack"; ShowActions(true); Input.SetCustomMouseCursor(null); }
 
 	// ============================================================
-	// TURN ANNOUNCER + FLOATING TEXT (font applied)
+	// TURN ANNOUNCER + FLOATING TEXT
 	// ============================================================
 
 	private async Task ShowTurnAnnouncer(string text, Color color)
@@ -3271,13 +3767,9 @@ public partial class GameManager
 		announcer.AddThemeFontSizeOverride("font_size", 100); announcer.AddThemeColorOverride("font_color", color);
 		announcer.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0)); announcer.AddThemeConstantOverride("outline_size", 20);
 		if (_fantasyFont != null) announcer.AddThemeFontOverride("font", _fantasyFont);
-
 		announcer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(announcer); else AddChild(announcer);
-
-		announcer.PivotOffset = GetViewport().GetVisibleRect().Size / 2;
-		announcer.Scale = Vector2.Zero; announcer.Modulate = new Color(1, 1, 1, 0);
-
+		announcer.PivotOffset = GetViewport().GetVisibleRect().Size / 2; announcer.Scale = Vector2.Zero; announcer.Modulate = new Color(1, 1, 1, 0);
 		Tween tween = CreateTween();
 		tween.Parallel().TweenProperty(announcer, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 		tween.Parallel().TweenProperty(announcer, "modulate:a", 1.0f, 0.3f);
@@ -3285,7 +3777,6 @@ public partial class GameManager
 		tween.Chain().TweenProperty(announcer, "scale", new Vector2(1.5f, 1.5f), 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
 		tween.Parallel().TweenProperty(announcer, "modulate:a", 0.0f, 0.3f);
 		tween.Finished += () => announcer.QueueFree();
-
 		await ToSignal(tween, Tween.SignalName.Finished);
 	}
 
@@ -3293,9 +3784,7 @@ public partial class GameManager
 	{
 		Label3D label = new Label3D { Text = text, PixelSize = 0.02f, FontSize = (int)size, Modulate = color, OutlineModulate = new Color(0, 0, 0), OutlineSize = 6, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true };
 		if (_fantasyFont != null) label.Font = _fantasyFont;
-		AddChild(label);
-		label.GlobalPosition = targetPosition + new Vector3(0, 1.5f, 0);
-
+		AddChild(label); label.GlobalPosition = targetPosition + new Vector3(0, 1.5f, 0);
 		Tween tween = CreateTween();
 		tween.TweenProperty(label, "global_position", label.GlobalPosition + new Vector3(0, 1.2f, 0), 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 		tween.Parallel().TweenProperty(label, "modulate:a", 0.0f, 0.8f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
@@ -3303,37 +3792,310 @@ public partial class GameManager
 	}
 
 	// ============================================================
-	// LEVEL UP / LOOT / PARTY (preserved exactly from original)
+	// BOND NOTIFICATION — Slide-in for bond gain/loss
+	// ============================================================
+	// NOTE: This is called "ShowBondNotification" to match AddBond() in GameManager.cs
+
+	private void ShowBondNotification(string charName, int amount, int oldXP, int newXP, int rankChange)
+	{
+		bool positive = amount > 0;
+		Color themeColor = positive ? new Color(0.3f, 0.85f, 0.4f) : new Color(1f, 0.35f, 0.35f);
+	 
+		PanelContainer panel = new PanelContainer();
+		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+		{
+			BgColor = new Color(0.06f, 0.06f, 0.1f, 0.95f),
+			CornerRadiusTopLeft = 10, CornerRadiusTopRight = 10, CornerRadiusBottomLeft = 10, CornerRadiusBottomRight = 10,
+			BorderWidthLeft = 3, BorderWidthRight = 3, BorderWidthTop = 3, BorderWidthBottom = 3,
+			BorderColor = themeColor,
+			ShadowSize = 8, ShadowColor = new Color(themeColor.R, themeColor.G, themeColor.B, 0.3f), ShadowOffset = new Vector2(0, 3),
+			ContentMarginLeft = 14, ContentMarginRight = 14, ContentMarginTop = 8, ContentMarginBottom = 8
+		});
+	 
+		HBoxContainer hbox = new HBoxContainer();
+		hbox.AddThemeConstantOverride("separation", 10);
+		panel.AddChild(hbox);
+	 
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName);
+		if (companion != null)
+		{
+			Texture2D portrait = GD.Load<Texture2D>(companion.Profile.SpritePath);
+			if (portrait != null)
+				hbox.AddChild(new TextureRect { Texture = portrait, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(32, 32) });
+		}
+	 
+		VBoxContainer infoCol = new VBoxContainer();
+		infoCol.AddThemeConstantOverride("separation", 3);
+		hbox.AddChild(infoCol);
+	 
+		string prefix = positive ? "+" : "";
+		Label title = new Label { Text = $"{charName}  {prefix}{amount}", HorizontalAlignment = HorizontalAlignment.Left };
+		title.AddThemeFontSizeOverride("font_size", 16);
+		title.AddThemeColorOverride("font_color", themeColor);
+		title.AddThemeConstantOverride("outline_size", 4);
+		title.AddThemeColorOverride("font_outline_color", Colors.Black);
+		if (_fantasyFont != null) title.AddThemeFontOverride("font", _fantasyFont);
+		infoCol.AddChild(title);
+	 
+		ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(180, 14), MaxValue = PersistentUnit.BondXPMax, Value = oldXP, ShowPercentage = false };
+		StyleBoxFlat barFill = new StyleBoxFlat { BgColor = themeColor, CornerRadiusTopLeft = 4, CornerRadiusTopRight = 4, CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4 };
+		bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft = 4, CornerRadiusTopRight = 4, CornerRadiusBottomLeft = 4, CornerRadiusBottomRight = 4 });
+		bar.AddThemeStyleboxOverride("fill", barFill);
+		infoCol.AddChild(bar);
+	 
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(panel); else AddChild(panel);
+	 
+		_activeBondNotifications.RemoveAll(p => !GodotObject.IsInstanceValid(p));
+	 
+		Vector2 ss = GetViewport().GetVisibleRect().Size;
+		float slotHeight = 62f;
+		int slotIndex = _activeBondNotifications.Count;
+		float targetY = 16f + slotIndex * slotHeight;
+	 
+		panel.Position = new Vector2(ss.X + 10f, targetY);
+		panel.PivotOffset = new Vector2(120, 25);
+		panel.Scale = new Vector2(0.5f, 0.5f);
+	 
+		_activeBondNotifications.Add(panel);
+	 
+		Tween seq = CreateTween();
+		seq.TweenProperty(panel, "position:x", ss.X - 270f, 0.3f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		seq.Parallel().TweenProperty(panel, "scale", Vector2.One, 0.25f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		seq.TweenInterval(0.1f);
+	 
+		if (rankChange == 1)
+		{
+			seq.TweenProperty(bar, "value", (double)PersistentUnit.BondXPMax, 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+			seq.TweenCallback(Callable.From(() => barFill.BgColor = new Color(1f, 0.85f, 0.2f)));
+			seq.TweenInterval(0.2f);
+			seq.TweenCallback(Callable.From(() => { bar.Value = 0; barFill.BgColor = themeColor; }));
+			seq.TweenProperty(bar, "value", (double)newXP, 0.2f);
+		}
+		else if (rankChange == -1)
+		{
+			seq.TweenProperty(bar, "value", 0.0, 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+			seq.TweenCallback(Callable.From(() => barFill.BgColor = new Color(1f, 0.2f, 0.2f)));
+			seq.TweenInterval(0.2f);
+			seq.TweenCallback(Callable.From(() => { bar.Value = 0; barFill.BgColor = themeColor; }));
+			seq.TweenProperty(bar, "value", (double)newXP, 0.2f);
+		}
+		else
+		{
+			seq.TweenProperty(bar, "value", (double)newXP, 0.3f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
+		}
+	 
+		seq.TweenInterval(1.5f);
+		seq.TweenCallback(Callable.From(() =>
+		{
+			_activeBondNotifications.Remove(panel);
+			Tween outT = CreateTween();
+			outT.TweenProperty(panel, "position:x", ss.X + 10f, 0.25f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outT.Parallel().TweenProperty(panel, "scale", new Vector2(0.5f, 0.5f), 0.2f)
+				.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			outT.Finished += () => { if (GodotObject.IsInstanceValid(panel)) panel.QueueFree(); };
+		}));
+	}
+
+	// ============================================================
+	// CARD RANK CELEBRATIONS — Up and Down
+	// ============================================================
+
+	private void ShowCardRankUpCelebration(PersistentUnit unit, CardRank oldRank, CardRank newRank)
+	{
+		ShowCardRankCelebration(unit, oldRank, newRank, true);
+	}
+
+	private void ShowCardRankDownCelebration(PersistentUnit unit, CardRank oldRank, CardRank newRank)
+	{
+		ShowCardRankCelebration(unit, oldRank, newRank, false);
+	}
+
+	private void ShowCardRankCelebration(PersistentUnit unit, CardRank oldRank, CardRank newRank, bool isUpgrade)
+	{
+		CanvasLayer celebLayer = new CanvasLayer { Layer = 95 };
+		AddChild(celebLayer);
+
+		ColorRect dim = new ColorRect();
+		dim.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		dim.Color = new Color(0, 0, 0, 0);
+		dim.MouseFilter = Control.MouseFilterEnum.Ignore;
+		celebLayer.AddChild(dim);
+
+		Vector2 ss = GetViewport().GetVisibleRect().Size;
+		Vector2 center = ss / 2f;
+
+		Control oldCard = CreateCelebrationCard(unit, oldRank);
+		oldCard.Position = center - new Vector2(80, 110);
+		oldCard.PivotOffset = new Vector2(80, 110);
+		oldCard.Scale = Vector2.Zero;
+		celebLayer.AddChild(oldCard);
+
+		Control newCard = CreateCelebrationCard(unit, newRank);
+		newCard.Position = center - new Vector2(80, 110);
+		newCard.PivotOffset = new Vector2(80, 110);
+		newCard.Scale = new Vector2(0.01f, 1f);
+		newCard.Visible = false;
+		celebLayer.AddChild(newCard);
+
+		Color titleColor = isUpgrade ? new Color(1f, 0.9f, 0.3f) : new Color(1f, 0.3f, 0.3f);
+		string titleText = isUpgrade ? "BOND RANK UP!" : "BOND RANK DOWN...";
+
+		Label titleLabel = new Label { Text = titleText, HorizontalAlignment = HorizontalAlignment.Center };
+		titleLabel.AddThemeFontSizeOverride("font_size", 52);
+		titleLabel.AddThemeColorOverride("font_color", titleColor);
+		titleLabel.AddThemeConstantOverride("outline_size", 16);
+		titleLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		if (_fantasyFont != null) titleLabel.AddThemeFontOverride("font", _fantasyFont);
+		titleLabel.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+		titleLabel.Position = new Vector2(0, center.Y - 160f);
+		titleLabel.Scale = Vector2.Zero;
+		titleLabel.PivotOffset = new Vector2(ss.X / 2f, 28f);
+		celebLayer.AddChild(titleLabel);
+
+		Tween seq = CreateTween();
+		seq.TweenProperty(dim, "color:a", 0.5f, 0.3f);
+		seq.TweenProperty(oldCard, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		seq.Parallel().TweenProperty(titleLabel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(0.15f);
+		seq.TweenInterval(0.7f);
+
+		if (isUpgrade)
+		{
+			seq.TweenProperty(oldCard, "scale:x", 0.01f, 0.2f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+			seq.TweenCallback(Callable.From(() => { oldCard.Visible = false; newCard.Visible = true; }));
+			seq.TweenProperty(newCard, "scale", new Vector2(1.15f, 1.15f), 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			seq.TweenProperty(newCard, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+			seq.TweenCallback(Callable.From(() => SpawnCardSparkles(celebLayer, center, true)));
+		}
+		else
+		{
+			for (int i = 0; i < 6; i++)
+			{
+				float offsetX = (i % 2 == 0 ? 8f : -8f);
+				seq.TweenProperty(oldCard, "position:x", oldCard.Position.X + offsetX, 0.04f);
+			}
+			seq.TweenProperty(oldCard, "position:x", oldCard.Position.X, 0.04f);
+			seq.TweenProperty(oldCard, "scale", new Vector2(0.8f, 0.3f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+			seq.TweenCallback(Callable.From(() => { oldCard.Visible = false; newCard.Visible = true; newCard.Scale = Vector2.Zero; }));
+			seq.TweenProperty(newCard, "scale", Vector2.One, 0.3f).SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+			seq.TweenCallback(Callable.From(() => SpawnCardSparkles(celebLayer, center, false)));
+		}
+
+		string resultText = newRank == CardRank.None
+			? $"{unit.Profile.Name}: Bond Lost..."
+			: $"{unit.Profile.Name}: {CardImageHelper.GetSuitSymbol(unit.CardSuit)} {newRank.DisplayName()}";
+		seq.TweenCallback(Callable.From(() => {
+			titleLabel.Text = resultText;
+			titleLabel.AddThemeColorOverride("font_color", isUpgrade ? new Color(1f, 0.95f, 0.7f) : new Color(0.7f, 0.4f, 0.4f));
+			titleLabel.Scale = new Vector2(0.8f, 0.8f);
+		}));
+		seq.TweenProperty(titleLabel, "scale", Vector2.One, 0.25f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+		seq.TweenInterval(1.3f);
+		seq.TweenProperty(newCard, "scale", Vector2.Zero, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		seq.Parallel().TweenProperty(titleLabel, "scale", Vector2.Zero, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+		seq.Parallel().TweenProperty(dim, "color:a", 0f, 0.3f);
+		seq.Finished += () => { celebLayer.QueueFree(); PlayNextCelebration(); };
+	}
+
+	private Control CreateCelebrationCard(PersistentUnit unit, CardRank rank)
+	{
+		float cardW = 160f, cardH = 220f;
+		PanelContainer card = new PanelContainer { CustomMinimumSize = new Vector2(cardW, cardH) };
+		Color borderColor = rank == CardRank.None ? new Color(0.3f, 0.3f, 0.35f) : CardImageHelper.GetSuitColor(unit.CardSuit);
+		card.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+		{
+			BgColor = new Color(0.05f, 0.05f, 0.07f, 0.97f),
+			CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12,
+			BorderWidthLeft = 4, BorderWidthRight = 4, BorderWidthTop = 4, BorderWidthBottom = 4,
+			BorderColor = borderColor,
+			ShadowSize = 16, ShadowColor = new Color(borderColor.R, borderColor.G, borderColor.B, 0.5f),
+			ContentMarginLeft = 8, ContentMarginRight = 8, ContentMarginTop = 8, ContentMarginBottom = 8
+		});
+		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+		vbox.AddThemeConstantOverride("separation", 4);
+		card.AddChild(vbox);
+
+		if (rank == CardRank.None)
+		{
+			Label qm = new Label { Text = "?", HorizontalAlignment = HorizontalAlignment.Center };
+			qm.AddThemeFontSizeOverride("font_size", 80); qm.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.35f));
+			if (_fantasyFont != null) qm.AddThemeFontOverride("font", _fantasyFont);
+			vbox.AddChild(qm);
+			Label noLabel = new Label { Text = "No Bond", HorizontalAlignment = HorizontalAlignment.Center };
+			noLabel.AddThemeFontSizeOverride("font_size", 16); noLabel.AddThemeColorOverride("font_color", new Color(0.4f, 0.4f, 0.45f));
+			if (_fantasyFont != null) noLabel.AddThemeFontOverride("font", _fantasyFont);
+			vbox.AddChild(noLabel);
+		}
+		else
+		{
+			string imgPath = CardImageHelper.GetCardImagePath(unit.CardSuit, rank);
+			Texture2D tex = !string.IsNullOrEmpty(imgPath) ? GD.Load<Texture2D>(imgPath) : null;
+			if (tex != null) vbox.AddChild(new TextureRect { Texture = tex, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(cardW - 20, cardH - 50), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			Label rankLabel = new Label { Text = $"{CardImageHelper.GetSuitSymbol(unit.CardSuit)} {rank.DisplayName()}", HorizontalAlignment = HorizontalAlignment.Center };
+			rankLabel.AddThemeFontSizeOverride("font_size", 16); rankLabel.AddThemeColorOverride("font_color", borderColor);
+			rankLabel.AddThemeConstantOverride("outline_size", 4); rankLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) rankLabel.AddThemeFontOverride("font", _fantasyFont);
+			vbox.AddChild(rankLabel);
+		}
+		return card;
+	}
+
+	private void SpawnCardSparkles(CanvasLayer layer, Vector2 center, bool isUpgrade)
+	{
+		var rng = new System.Random();
+		Color[] colors = isUpgrade
+			? new[] { new Color(1f, 0.9f, 0.3f), new Color(1f, 0.6f, 0.1f), new Color(1f, 1f, 0.7f), new Color(0.4f, 1f, 0.5f) }
+			: new[] { new Color(0.5f, 0.5f, 0.6f), new Color(0.3f, 0.3f, 0.4f), new Color(0.6f, 0.4f, 0.4f) };
+		int count = isUpgrade ? 20 : 10;
+		for (int i = 0; i < count; i++)
+		{
+			Label spark = new Label { Text = isUpgrade ? "✦" : "✧" };
+			spark.AddThemeFontSizeOverride("font_size", rng.Next(18, 45));
+			spark.AddThemeColorOverride("font_color", colors[rng.Next(colors.Length)]);
+			spark.AddThemeConstantOverride("outline_size", 4); spark.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) spark.AddThemeFontOverride("font", _fantasyFont);
+			layer.AddChild(spark);
+			spark.PivotOffset = new Vector2(15, 15); spark.Position = center; spark.Scale = Vector2.Zero;
+			float angle = (float)(rng.NextDouble() * Mathf.Pi * 2);
+			float dist = 80f + (float)rng.NextDouble() * 120f;
+			Vector2 target = center + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * dist;
+			float fallY = isUpgrade ? 0f : 80f;
+			Tween t = layer.GetTree().CreateTween().SetParallel(true);
+			t.TweenProperty(spark, "position", target + new Vector2(0, fallY), isUpgrade ? 0.5f : 0.7f).SetTrans(Tween.TransitionType.Circ).SetEase(Tween.EaseType.Out);
+			t.TweenProperty(spark, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+			t.TweenProperty(spark, "rotation", (float)(rng.NextDouble() - 0.5) * 4f, 0.5f);
+			t.SetParallel(false);
+			t.TweenProperty(spark, "modulate:a", 0f, 0.3f).SetDelay(0.2f);
+			t.Finished += () => spark.QueueFree();
+		}
+	}
+
+	// ============================================================
+	// LEVEL UP / LOOT / PARTY
 	// ============================================================
 
 	public async Task ShowLevelUpScreen(Unit unit)
 	{
 		_levelUpActive = true; ShowActions(false);
 		if (DimOverlay != null) DimOverlay.Visible = true;
-
 		ActiveLevelUpTcs = new TaskCompletionSource<bool>();
-
 		Control uiRoot = new Control(); uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (MasterTheme != null) uiRoot.Theme = MasterTheme;
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
-
 		CenterContainer center = new CenterContainer(); center.SetAnchorsPreset(Control.LayoutPreset.FullRect); uiRoot.AddChild(center);
-
 		PanelContainer panel = new PanelContainer();
-		StyleBoxFlat panelStyle = new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f, 0.95f), CornerRadiusTopLeft = 15, CornerRadiusTopRight = 15, CornerRadiusBottomLeft = 15, CornerRadiusBottomRight = 15, BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4, BorderColor = new Color(1f, 0.8f, 0f, 1f), ContentMarginBottom = 30, ContentMarginTop = 30, ContentMarginLeft = 40, ContentMarginRight = 40 };
-		panel.AddThemeStyleboxOverride("panel", panelStyle); center.AddChild(panel);
-
+		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f, 0.95f), CornerRadiusTopLeft = 15, CornerRadiusTopRight = 15, CornerRadiusBottomLeft = 15, CornerRadiusBottomRight = 15, BorderWidthBottom = 4, BorderWidthTop = 4, BorderWidthLeft = 4, BorderWidthRight = 4, BorderColor = new Color(1f, 0.8f, 0f, 1f), ContentMarginBottom = 30, ContentMarginTop = 30, ContentMarginLeft = 40, ContentMarginRight = 40 });
+		center.AddChild(panel);
 		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 15); panel.AddChild(vbox);
-
 		Label title = new Label { Text = $"{unit.Data.Profile.Name} Reached Level {unit.Data.Level}!", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 30); vbox.AddChild(title);
-
 		List<string> options = new List<string> { "FullHeal", "MaxHP", "Movement", "AttackDamage" }.OrderBy(x => new System.Random().Next()).Take(3).ToList();
-
 		foreach (string opt in options)
 		{
 			Button btn = new Button { CustomMinimumSize = new Vector2(300, 60) }; btn.AddThemeFontSizeOverride("font_size", 20);
 			if (opt == "FullHeal") btn.Text = "Fully Restore HP"; else if (opt == "MaxHP") btn.Text = "+5 Max HP"; else if (opt == "Movement") btn.Text = "+1 Movement Range"; else if (opt == "AttackDamage") btn.Text = "+2 Attack Damage";
-
 			btn.Pressed += () => {
 				if (opt == "FullHeal") unit.Data.CurrentHP = unit.Data.MaxHP; else if (opt == "MaxHP") { unit.Data.MaxHP += 5; unit.Data.CurrentHP += 5; } else if (opt == "Movement") unit.Data.Movement += 1; else if (opt == "AttackDamage") unit.Data.AttackDamage += 2;
 				unit.UpdateVisuals();
@@ -3343,7 +4105,6 @@ public partial class GameManager
 			};
 			vbox.AddChild(btn);
 		}
-
 		await ToSignal(GetTree(), "process_frame");
 		panel.PivotOffset = panel.Size / 2; panel.Scale = Vector2.Zero;
 		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
@@ -3361,25 +4122,19 @@ public partial class GameManager
 	{
 		_lootScreenActive = true; ShowActions(false);
 		if (DimOverlay != null) DimOverlay.Visible = true;
-
 		ActiveLootTcs = new TaskCompletionSource<bool>();
 		Control uiRoot = new Control(); uiRoot.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(uiRoot); else AddChild(uiRoot);
-
 		PanelContainer panel = new PanelContainer { Theme = MasterTheme, CustomMinimumSize = new Vector2(400, 0) }; uiRoot.AddChild(panel);
 		panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
 		panel.Position = new Vector2((GetViewport().GetVisibleRect().Size.X / 2f) - 200f, -300f);
-
 		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 15); panel.AddChild(vbox);
 		Label title = new Label { Text = "Loot Found!", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 28); title.AddThemeColorOverride("font_color", new Color(1f, 0.85f, 0.2f)); vbox.AddChild(title);
 		vbox.AddChild(new TextureRect { Texture = GD.Load<Texture2D>(item.IconPath), ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(80, 80), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
-
 		RichTextLabel itemName = new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[center]{item.Name}\n[color=#aaaaaa]{item.Description}[/color][/center]", CustomMinimumSize = new Vector2(350, 0) };
 		itemName.AddThemeFontSizeOverride("normal_font_size", 20); vbox.AddChild(itemName);
-
 		Button grabBtn = new Button { Text = "Grab", CustomMinimumSize = new Vector2(200, 60) }; AddButtonJuice(grabBtn); vbox.AddChild(grabBtn);
 		CreateTween().TweenProperty(panel, "position:y", 150f, 0.6f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-
 		grabBtn.Pressed += () => {
 			Inventory.Add(item);
 			Tween outTween = CreateTween(); outTween.TweenProperty(panel, "position:y", -300f, 0.3f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
@@ -3391,7 +4146,6 @@ public partial class GameManager
 	private void TogglePartyMenu()
 	{
 		if (_currentState != State.PlayerTurn && _currentState != State.PartyMenu && _currentState != State.Camp) return;
-
 		if (_activePartyMenu != null)
 		{
 			Tween outTween = CreateTween();
@@ -3404,37 +4158,26 @@ public partial class GameManager
 			};
 			return;
 		}
-
 		if (_currentState == State.Camp && _campUIRoot != null) _campUIRoot.Visible = false;
-
 		_currentState = State.PartyMenu; ShowActions(false);
 		if (DimOverlay != null) DimOverlay.Visible = true;
-
 		_activePartyMenu = new CenterContainer(); _activePartyMenu.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activePartyMenu); else AddChild(_activePartyMenu);
-
 		VBoxContainer menuWrapper = new VBoxContainer(); menuWrapper.AddThemeConstantOverride("separation", 20); _activePartyMenu.AddChild(menuWrapper);
 		PanelContainer mainPanel = new PanelContainer { CustomMinimumSize = new Vector2(950, 480), Theme = MasterTheme }; menuWrapper.AddChild(mainPanel);
 		HBoxContainer mainHBox = new HBoxContainer(); mainPanel.AddChild(mainHBox);
 		VBoxContainer leftCol = new VBoxContainer { CustomMinimumSize = new Vector2(280, 0) }; mainHBox.AddChild(leftCol);
-
 		Label rosterTitle = new Label { Text = "Party Roster", HorizontalAlignment = HorizontalAlignment.Center }; rosterTitle.AddThemeFontSizeOverride("font_size", 28); leftCol.AddChild(rosterTitle); leftCol.AddChild(new HSeparator());
 		ScrollContainer rosterScroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, VerticalScrollMode = ScrollContainer.ScrollMode.Auto, SizeFlagsVertical = Control.SizeFlags.ExpandFill }; leftCol.AddChild(rosterScroll);
 		MarginContainer rosterMargin = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; rosterMargin.AddThemeConstantOverride("margin_left", 16); rosterMargin.AddThemeConstantOverride("margin_right", 16); rosterMargin.AddThemeConstantOverride("margin_top", 10); rosterMargin.AddThemeConstantOverride("margin_bottom", 10); rosterScroll.AddChild(rosterMargin);
 		VBoxContainer rosterBox = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; rosterBox.AddThemeConstantOverride("separation", 8); rosterMargin.AddChild(rosterBox);
-
 		VSeparator splitLine = new VSeparator(); splitLine.AddThemeConstantOverride("separation", 30); mainHBox.AddChild(splitLine);
 		_rightMenuPanel = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; mainHBox.AddChild(_rightMenuPanel);
-
-		foreach (PersistentUnit unit in _party)
-		{ Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) }; AddButtonJuice(btn); btn.Pressed += () => RefreshPartyDetailsAndInventory(unit); rosterBox.AddChild(btn); }
-
+		foreach (PersistentUnit unit in _party) { Button btn = new Button { Text = unit.Profile.Name, CustomMinimumSize = new Vector2(0, 60) }; AddButtonJuice(btn); btn.Pressed += () => RefreshPartyDetailsAndInventory(unit); rosterBox.AddChild(btn); }
 		leftCol.AddChild(new HSeparator());
 		Button closeBtn = new Button { Text = "Close Menu", CustomMinimumSize = new Vector2(0, 50) }; closeBtn.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f)); AddButtonJuice(closeBtn); closeBtn.Pressed += TogglePartyMenu; leftCol.AddChild(closeBtn);
-
 		menuWrapper.PivotOffset = new Vector2(475, 350); menuWrapper.Scale = Vector2.Zero;
 		CreateTween().TweenProperty(menuWrapper, "scale", Vector2.One, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-
 		if (_party.Count > 0) RefreshPartyDetailsAndInventory(_party[0]);
 	}
 
@@ -3450,51 +4193,122 @@ public partial class GameManager
 		}
 	}
 
+	// ============================================================
+	// PARTY MEMBER DETAILS — Card + Bond bar
+	// ============================================================
+
 	private Control BuildPartyMemberDetails(PersistentUnit unit)
 	{
-		HBoxContainer layout = new HBoxContainer(); layout.AddThemeConstantOverride("separation", 40);
+		HBoxContainer layout = new HBoxContainer();
+		layout.AddThemeConstantOverride("separation", 40);
 		layout.AddChild(new TextureRect { Texture = GD.Load<Texture2D>(unit.Profile.SpritePath), ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(240, 350), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter });
 
-		VBoxContainer rightCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center }; rightCol.AddThemeConstantOverride("separation", 15); layout.AddChild(rightCol);
+		VBoxContainer rightCol = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center };
+		rightCol.AddThemeConstantOverride("separation", 15);
+		layout.AddChild(rightCol);
+
 		rightCol.AddChild(new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[left][font_size=32][b][wave amp=20 freq=2]{unit.Profile.Name}[/wave][/b][/font_size]\n[color=gold]Level {unit.Level}[/color][/left]" });
 		rightCol.AddChild(new RichTextLabel { BbcodeEnabled = true, FitContent = true, ScrollActive = false, Text = $"[left]{(unit.IsPlayerCharacter ? "[color=#44ff44]Player Character[/color]" : "[color=#44ccff]Companion[/color]")}\n\n[color=#aaaaaa]Max HP:[/color] {unit.GetTotalMaxHP()}\n[color=#aaaaaa]Damage:[/color] {unit.GetTotalDamage()}\n[color=#aaaaaa]Movement:[/color] {unit.GetTotalMovement()}[/left]" });
-
 		rightCol.AddChild(new HSeparator());
-		Label equipTitle = new Label { Text = "Equipment (Click to Remove)" }; equipTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); rightCol.AddChild(equipTitle);
-
-		HBoxContainer equipBox = new HBoxContainer(); equipBox.AddThemeConstantOverride("separation", 20); rightCol.AddChild(equipBox);
-		equipBox.AddChild(CreateEquipmentSlot("Weapon", unit.EquippedWeapon, EquipSlot.Weapon)); equipBox.AddChild(CreateEquipmentSlot("Armor", unit.EquippedArmor, EquipSlot.Armor));
 
 		if (!unit.IsPlayerCharacter)
 		{
-			rightCol.AddChild(new HSeparator());
-			Label relTitle = new Label { Text = "Dynamics with You" }; relTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); rightCol.AddChild(relTitle);
-			foreach (var rel in unit.Relationships)
+			Label bondTitle = new Label { Text = "Battle Bond" };
+			bondTitle.AddThemeColorOverride("font_color", new Color(0.85f, 0.75f, 0.5f));
+			bondTitle.AddThemeFontSizeOverride("font_size", 22);
+			if (_fantasyFont != null) bondTitle.AddThemeFontOverride("font", _fantasyFont);
+			rightCol.AddChild(bondTitle);
+
+			HBoxContainer bondRow = new HBoxContainer();
+			bondRow.AddThemeConstantOverride("separation", 20);
+			rightCol.AddChild(bondRow);
+
+			PanelContainer cardPanel = new PanelContainer { CustomMinimumSize = new Vector2(80, 110) };
+			Color cardBorder = unit.CardRank == CardRank.None ? new Color(0.3f, 0.3f, 0.35f) : CardImageHelper.GetSuitColor(unit.CardSuit);
+			cardPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.04f, 0.04f, 0.06f, 0.95f), CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8, CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8, BorderWidthLeft = 3, BorderWidthRight = 3, BorderWidthTop = 3, BorderWidthBottom = 3, BorderColor = cardBorder, ShadowSize = 6, ShadowColor = new Color(cardBorder.R, cardBorder.G, cardBorder.B, 0.4f), ContentMarginLeft = 4, ContentMarginRight = 4, ContentMarginTop = 4, ContentMarginBottom = 4 });
+			VBoxContainer cardInner = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+			cardPanel.AddChild(cardInner);
+
+			if (unit.CardRank == CardRank.None)
 			{
-				Color barColor = rel.Key == "Fear" ? new Color(0.8f, 0.3f, 0.3f) : new Color(0.3f, 0.8f, 0.5f);
-				ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(0, 22), ShowPercentage = false, MaxValue = 100 };
-				bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
-				bar.AddThemeStyleboxOverride("fill", new StyleBoxFlat { BgColor = barColor, CornerRadiusTopLeft=6, CornerRadiusTopRight=6, CornerRadiusBottomLeft=6, CornerRadiusBottomRight=6 });
-				Label barLabel = new Label { Text = $"  {rel.Key}: {rel.Value}%", VerticalAlignment = VerticalAlignment.Center }; barLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect); barLabel.AddThemeFontSizeOverride("font_size", 14); barLabel.AddThemeColorOverride("font_color", Color.Color8(255,255,255,220)); bar.AddChild(barLabel);
-				rightCol.AddChild(bar); bar.Value = 0;
-				bar.TreeEntered += () => { CreateTween().TweenProperty(bar, "value", (double)rel.Value, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
+				Label qm = new Label { Text = "?", HorizontalAlignment = HorizontalAlignment.Center };
+				qm.AddThemeFontSizeOverride("font_size", 48); qm.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.35f));
+				if (_fantasyFont != null) qm.AddThemeFontOverride("font", _fantasyFont);
+				cardInner.AddChild(qm);
 			}
+			else
+			{
+				string imgPath = CardImageHelper.GetCardImagePath(unit.CardSuit, unit.CardRank);
+				Texture2D cardTex = !string.IsNullOrEmpty(imgPath) ? GD.Load<Texture2D>(imgPath) : null;
+				if (cardTex != null) cardInner.AddChild(new TextureRect { Texture = cardTex, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, CustomMinimumSize = new Vector2(68, 95), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter });
+			}
+			bondRow.AddChild(cardPanel);
+
+			VBoxContainer bondInfo = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+			bondInfo.AddThemeConstantOverride("separation", 8);
+
+			string rankText = unit.CardRank == CardRank.None ? "No card yet" : $"{CardImageHelper.GetSuitSymbol(unit.CardSuit)} {unit.CardRank.DisplayName()}";
+			Label rankLabel = new Label { Text = rankText, HorizontalAlignment = HorizontalAlignment.Left };
+			rankLabel.AddThemeFontSizeOverride("font_size", 18); rankLabel.AddThemeColorOverride("font_color", cardBorder);
+			rankLabel.AddThemeConstantOverride("outline_size", 4); rankLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) rankLabel.AddThemeFontOverride("font", _fantasyFont);
+			bondInfo.AddChild(rankLabel);
+
+			CardRank nextRank = unit.CardRank == CardRank.None ? CardRank.Two : unit.CardRank.NextRank();
+			Label nextLabel = new Label { Text = $"Next: {nextRank.DisplayName()}", HorizontalAlignment = HorizontalAlignment.Left };
+			nextLabel.AddThemeFontSizeOverride("font_size", 13); nextLabel.AddThemeColorOverride("font_color", new Color(0.55f, 0.55f, 0.6f));
+			if (_fantasyFont != null) nextLabel.AddThemeFontOverride("font", _fantasyFont);
+			bondInfo.AddChild(nextLabel);
+
+			ProgressBar bondBar = new ProgressBar { CustomMinimumSize = new Vector2(0, 24), MaxValue = PersistentUnit.BondXPMax, Value = 0, ShowPercentage = false };
+			bondBar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 });
+			bondBar.AddThemeStyleboxOverride("fill", new StyleBoxFlat { BgColor = new Color(0.3f, 0.85f, 0.4f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 });
+			Label xpText = new Label { Text = $"{unit.BondXP} / {PersistentUnit.BondXPMax}", HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+			xpText.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			xpText.AddThemeFontSizeOverride("font_size", 13); xpText.AddThemeConstantOverride("outline_size", 4); xpText.AddThemeColorOverride("font_outline_color", Colors.Black);
+			if (_fantasyFont != null) xpText.AddThemeFontOverride("font", _fantasyFont);
+			bondBar.AddChild(xpText);
+			bondInfo.AddChild(bondBar);
+			bondBar.TreeEntered += () => { CreateTween().TweenProperty(bondBar, "value", (double)unit.BondXP, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out); };
+			bondRow.AddChild(bondInfo);
+
+			cardPanel.PivotOffset = cardPanel.CustomMinimumSize / 2f; cardPanel.Scale = Vector2.Zero;
+			cardPanel.TreeEntered += () => { CreateTween().TweenProperty(cardPanel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out).SetDelay(0.1f); };
 		}
+
+		rightCol.AddChild(new HSeparator());
+		Label equipTitle = new Label { Text = "Equipment (Click to Remove)" };
+		equipTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		rightCol.AddChild(equipTitle);
+		HBoxContainer equipBox = new HBoxContainer();
+		equipBox.AddThemeConstantOverride("separation", 20);
+		rightCol.AddChild(equipBox);
+		equipBox.AddChild(CreateEquipmentSlot("Weapon", unit.EquippedWeapon, EquipSlot.Weapon));
+		equipBox.AddChild(CreateEquipmentSlot("Armor", unit.EquippedArmor, EquipSlot.Armor));
 		return layout;
 	}
 
 	private Control CreateEquipmentSlot(string slotName, Equipment equip, EquipSlot slotType)
 	{
 		VBoxContainer slotBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
-		Label title = new Label { Text = slotName, HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 14); title.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f)); slotBox.AddChild(title);
-
+		Label title = new Label { Text = slotName, HorizontalAlignment = HorizontalAlignment.Center };
+		title.AddThemeFontSizeOverride("font_size", 14);
+		title.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+		slotBox.AddChild(title);
+	 
 		Button slotBtn = new Button { CustomMinimumSize = new Vector2(80, 80), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
-		slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
-
+		slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle);
+		slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle);
+		slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle);
+		slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+	 
 		if (equip != null)
 		{
-			slotBtn.Icon = GD.Load<Texture2D>(equip.IconPath); slotBtn.TooltipText = $"{equip.Name}\n{equip.Description}";
+			slotBtn.Icon = GD.Load<Texture2D>(equip.IconPath);
+			slotBtn.MouseEntered += () => ShowItemTooltip(equip, slotBtn);
+			slotBtn.MouseExited += () => HideItemTooltip();
 			slotBtn.Pressed += () => {
+				HideItemTooltip();
 				if (slotType == EquipSlot.Weapon) _viewedPartyMember.EquippedWeapon = null; else _viewedPartyMember.EquippedArmor = null;
 				Inventory.Add(equip);
 				Unit activeUnit = _units.FirstOrDefault(u => u.Data == _viewedPartyMember);
@@ -3503,26 +4317,38 @@ public partial class GameManager
 			};
 		}
 		else { slotBtn.Text = "+"; slotBtn.AddThemeColorOverride("font_color", new Color(0.3f, 0.3f, 0.3f)); }
-
+	 
 		slotBox.AddChild(slotBtn); AddSlotJuice(slotBtn, 0.1f); return slotBox;
 	}
 
 	private PanelContainer BuildInventoryUI()
 	{
-		PanelContainer invPanel = new PanelContainer { Theme = MasterTheme }; VBoxContainer invBox = new VBoxContainer(); invPanel.AddChild(invBox);
-		Label invTitle = new Label { Text = "Party Inventory (Click to Equip)" }; invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f)); invBox.AddChild(invTitle); invBox.AddChild(new HSeparator());
-
-		GridContainer grid = new GridContainer { Columns = 10 }; grid.AddThemeConstantOverride("h_separation", 10); grid.AddThemeConstantOverride("v_separation", 10); invBox.AddChild(grid);
-
+		PanelContainer invPanel = new PanelContainer { Theme = MasterTheme };
+		VBoxContainer invBox = new VBoxContainer(); invPanel.AddChild(invBox);
+		Label invTitle = new Label { Text = "Party Inventory (Click to Equip)" };
+		invTitle.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+		invBox.AddChild(invTitle); invBox.AddChild(new HSeparator());
+	 
+		GridContainer grid = new GridContainer { Columns = 10 };
+		grid.AddThemeConstantOverride("h_separation", 10);
+		grid.AddThemeConstantOverride("v_separation", 10);
+		invBox.AddChild(grid);
+	 
 		for (int i = 0; i < 20; i++)
 		{
 			Button slotBtn = new Button { CustomMinimumSize = new Vector2(70, 70), IconAlignment = HorizontalAlignment.Center, ExpandIcon = true };
-			slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle); slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle); slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
-
+			slotBtn.AddThemeStyleboxOverride("normal", ItemSlotStyle);
+			slotBtn.AddThemeStyleboxOverride("hover", ItemSlotHoverStyle);
+			slotBtn.AddThemeStyleboxOverride("pressed", ItemSlotStyle);
+			slotBtn.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+	 
 			if (i < Inventory.Count && Inventory[i] is Equipment equipItem)
 			{
-				slotBtn.Icon = GD.Load<Texture2D>(equipItem.IconPath); slotBtn.TooltipText = $"{equipItem.Name}\n{equipItem.Description}";
+				slotBtn.Icon = GD.Load<Texture2D>(equipItem.IconPath);
+				slotBtn.MouseEntered += () => ShowItemTooltip(equipItem, slotBtn);
+				slotBtn.MouseExited += () => HideItemTooltip();
 				slotBtn.Pressed += () => {
+					HideItemTooltip();
 					Inventory.Remove(equipItem);
 					Equipment oldItem = equipItem.Slot == EquipSlot.Weapon ? _viewedPartyMember.EquippedWeapon : _viewedPartyMember.EquippedArmor;
 					if (oldItem != null) Inventory.Add(oldItem);
@@ -3574,45 +4400,6 @@ public partial class GameManager
 		t.TweenProperty(spark, "rotation", (float)(rv - 0.5f) * 6f, dur);
 	}
 
-	private void ShowRelationshipNotification(string charName, string relType, int amount, int oldVal, int newVal)
-	{
-		bool isPositive = amount > 0; Color themeColor = isPositive ? new Color(0.4f, 1f, 0.5f) : new Color(1f, 0.4f, 0.4f); Color baseColor = new Color(0.3f, 0.6f, 0.9f);
-		PanelContainer panel = new PanelContainer();
-		panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0.08f, 0.08f, 0.12f, 0.95f), CornerRadiusTopLeft = 12, CornerRadiusTopRight = 12, CornerRadiusBottomLeft = 12, CornerRadiusBottomRight = 12, BorderWidthLeft = 4, BorderWidthRight = 4, BorderWidthTop = 4, BorderWidthBottom = 4, BorderColor = new Color(0.2f, 0.2f, 0.25f), ShadowSize = 12, ShadowColor = new Color(0, 0, 0, 0.6f), ShadowOffset = new Vector2(0, 6) });
-		MarginContainer margin = new MarginContainer(); margin.AddThemeConstantOverride("margin_left", 25); margin.AddThemeConstantOverride("margin_right", 25); margin.AddThemeConstantOverride("margin_top", 15); margin.AddThemeConstantOverride("margin_bottom", 15); panel.AddChild(margin);
-		VBoxContainer vbox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center }; vbox.AddThemeConstantOverride("separation", 12); margin.AddChild(vbox);
-		Label title = new Label { Text = $"{charName} - {relType}", HorizontalAlignment = HorizontalAlignment.Center }; title.AddThemeFontSizeOverride("font_size", 22); if (MasterTheme?.DefaultFont != null) title.AddThemeFontOverride("font", MasterTheme.DefaultFont); vbox.AddChild(title);
-		ProgressBar bar = new ProgressBar { CustomMinimumSize = new Vector2(280, 25), MaxValue = 100, Value = oldVal, ShowPercentage = false };
-		StyleBoxFlat barFill = new StyleBoxFlat { BgColor = baseColor, CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 };
-		bar.AddThemeStyleboxOverride("fill", barFill); bar.AddThemeStyleboxOverride("background", new StyleBoxFlat { BgColor = new Color(0.1f, 0.1f, 0.15f), CornerRadiusTopLeft = 6, CornerRadiusTopRight = 6, CornerRadiusBottomLeft = 6, CornerRadiusBottomRight = 6 }); vbox.AddChild(bar);
-		string pfx = isPositive ? "YAY!" : "BOO!"; string amtStr = isPositive ? $"+{amount}" : $"{amount}";
-		Label effectLabel = new Label { Text = $"{pfx} {amtStr}", HorizontalAlignment = HorizontalAlignment.Center, Modulate = new Color(1, 1, 1, 0) };
-		effectLabel.AddThemeFontSizeOverride("font_size", 26); effectLabel.AddThemeColorOverride("font_color", themeColor); effectLabel.AddThemeConstantOverride("outline_size", 6); effectLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
-		if (MasterTheme?.DefaultFont != null) effectLabel.AddThemeFontOverride("font", MasterTheme.DefaultFont); vbox.AddChild(effectLabel);
-		if (DimOverlay != null) DimOverlay.GetParent().AddChild(panel); else AddChild(panel);
-		CallDeferred(MethodName.RunRelationshipTweenSequence, panel, bar, barFill, effectLabel, themeColor, newVal);
-	}
-
-	private void RunRelationshipTweenSequence(PanelContainer panel, ProgressBar bar, StyleBoxFlat barFill, Label effectLabel, Color themeColor, int newVal)
-	{
-		Vector2 ss = GetViewport().GetVisibleRect().Size; panel.Position = new Vector2(ss.X + 50f, 60f); panel.PivotOffset = panel.Size / 2f;
-		Tween seq = CreateTween();
-		seq.TweenProperty(panel, "position:x", ss.X - panel.Size.X - 40f, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		seq.TweenInterval(0.3f);
-		seq.TweenProperty(bar, "value", (double)newVal, 0.6f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.InOut);
-		seq.TweenCallback(Callable.From(() => {
-			StyleBoxFlat ps = (StyleBoxFlat)panel.GetThemeStylebox("panel"); ps.BorderColor = themeColor; barFill.BgColor = themeColor;
-			effectLabel.Modulate = new Color(1, 1, 1, 1); effectLabel.Scale = new Vector2(0.01f, 0.01f); effectLabel.PivotOffset = effectLabel.Size / 2f;
-			Tween pop = CreateTween(); pop.TweenProperty(effectLabel, "scale", new Vector2(1.3f, 1.3f), 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-			pop.TweenProperty(effectLabel, "scale", Vector2.One, 0.2f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-			Tween bump = CreateTween(); bump.TweenProperty(panel, "scale", new Vector2(1.08f, 1.08f), 0.1f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
-			bump.TweenProperty(panel, "scale", Vector2.One, 0.25f).SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
-		}));
-		seq.TweenInterval(1.8f);
-		seq.TweenProperty(panel, "position:x", ss.X + 50f, 0.35f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-		seq.Finished += () => panel.QueueFree();
-	}
-
 	private void ShowNextMissionScreen()
 	{
 		_currentState = State.Cutscene; ShowActions(false); if (DimOverlay != null) DimOverlay.Visible = true;
@@ -3626,32 +4413,73 @@ public partial class GameManager
 		Button nextBtn = new Button { Text = "Start Next Mission", CustomMinimumSize = new Vector2(250, 60) }; AddButtonJuice(nextBtn); vbox.AddChild(nextBtn);
 		panel.PivotOffset = new Vector2(200, 100); panel.Scale = Vector2.Zero;
 		CreateTween().TweenProperty(panel, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		nextBtn.Pressed += () => { 
-			Tween ot = CreateTween(); ot.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
-			ot.Finished += () => { 
-				uiRoot.QueueFree(); 
-				if (DimOverlay != null) DimOverlay.Visible = false; 
-				LoadMission(_currentMissionIndex + 1); 
-			}; 
-		};
+		nextBtn.Pressed += () => { Tween ot = CreateTween(); ot.TweenProperty(panel, "scale", Vector2.Zero, 0.2f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In); ot.Finished += () => { uiRoot.QueueFree(); if (DimOverlay != null) DimOverlay.Visible = false; LoadMission(_currentMissionIndex + 1); }; };
 	}
-
-	private void ShowCardRankUpNotification(PersistentUnit unit, CardRank newRank)
+	
+	private void ShowItemTooltip(Equipment item, Button sourceBtn)
 	{
-		string ss = CardImageHelper.GetSuitSymbol(unit.CardSuit);
-		Color sc = CardImageHelper.GetSuitColor(unit.CardSuit);
-		Label label = new Label { Text = $"BOND RANK UP!\n{unit.Profile.Name}: {ss} {newRank.DisplayName()}", HorizontalAlignment = HorizontalAlignment.Center };
-		label.AddThemeFontSizeOverride("font_size", 48); label.AddThemeColorOverride("font_color", sc);
-		label.AddThemeColorOverride("font_outline_color", Colors.Black); label.AddThemeConstantOverride("outline_size", 14);
-		if (_fantasyFont != null) label.AddThemeFontOverride("font", _fantasyFont);
-		label.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-		if (DimOverlay != null) DimOverlay.GetParent().AddChild(label); else AddChild(label);
-		label.PivotOffset = GetViewport().GetVisibleRect().Size / 2; label.Scale = Vector2.Zero; label.Modulate = new Color(1, 1, 1, 0);
-		Tween t = CreateTween();
-		t.Parallel().TweenProperty(label, "scale", Vector2.One, 0.4f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
-		t.Parallel().TweenProperty(label, "modulate:a", 1f, 0.3f);
-		t.Chain().TweenInterval(1.5f); t.Chain().TweenProperty(label, "modulate:a", 0f, 0.4f);
-		t.Finished += () => label.QueueFree();
+		HideItemTooltip();
+		_activeTooltip = new PanelContainer();
+		_activeTooltip.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+		{
+			BgColor = new Color(0.08f, 0.08f, 0.12f, 0.97f),
+			CornerRadiusTopLeft = 10, CornerRadiusTopRight = 10, CornerRadiusBottomLeft = 10, CornerRadiusBottomRight = 10,
+			BorderWidthLeft = 3, BorderWidthRight = 3, BorderWidthTop = 3, BorderWidthBottom = 3,
+			BorderColor = item.Slot == EquipSlot.Weapon ? new Color(1f, 0.6f, 0.2f) : new Color(0.3f, 0.7f, 1f),
+			ShadowSize = 12, ShadowColor = new Color(0, 0, 0, 0.7f), ShadowOffset = new Vector2(0, 4),
+			ContentMarginLeft = 16, ContentMarginRight = 16, ContentMarginTop = 12, ContentMarginBottom = 12
+		});
+		if (MasterTheme != null) _activeTooltip.Theme = MasterTheme;
+	 
+		VBoxContainer vbox = new VBoxContainer();
+		vbox.AddThemeConstantOverride("separation", 6);
+		_activeTooltip.AddChild(vbox);
+	 
+		Label nameLabel = new Label { Text = item.Name };
+		nameLabel.AddThemeFontSizeOverride("font_size", 18);
+		nameLabel.AddThemeColorOverride("font_color", item.Slot == EquipSlot.Weapon ? new Color(1f, 0.75f, 0.3f) : new Color(0.5f, 0.85f, 1f));
+		nameLabel.AddThemeConstantOverride("outline_size", 4);
+		nameLabel.AddThemeColorOverride("font_outline_color", Colors.Black);
+		if (_fantasyFont != null) nameLabel.AddThemeFontOverride("font", _fantasyFont);
+		vbox.AddChild(nameLabel);
+	 
+		Label slotLabel = new Label { Text = item.Slot == EquipSlot.Weapon ? "Weapon" : "Armor" };
+		slotLabel.AddThemeFontSizeOverride("font_size", 12);
+		slotLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.55f));
+		if (_fantasyFont != null) slotLabel.AddThemeFontOverride("font", _fantasyFont);
+		vbox.AddChild(slotLabel);
+	 
+		void AddStat(string text, Color color) {
+			Label s = new Label { Text = text }; s.AddThemeFontSizeOverride("font_size", 14);
+			s.AddThemeColorOverride("font_color", color);
+			if (_fantasyFont != null) s.AddThemeFontOverride("font", _fantasyFont);
+			vbox.AddChild(s);
+		}
+		if (item.BonusDamage > 0) AddStat($"+{item.BonusDamage} Damage", new Color(1f, 0.4f, 0.3f));
+		if (item.BonusMaxHP > 0) AddStat($"+{item.BonusMaxHP} Max HP", new Color(0.3f, 1f, 0.4f));
+		if (item.BonusMovement > 0) AddStat($"+{item.BonusMovement} Movement", new Color(0.4f, 0.8f, 1f));
+		if (item.JokerEffects != JokerEffect.None) AddStat($"Joker: {item.JokerEffects}", new Color(1f, 0.85f, 0.3f));
+	 
+		if (DimOverlay != null) DimOverlay.GetParent().AddChild(_activeTooltip); else AddChild(_activeTooltip);
+		_activeTooltip.Position = new Vector2(sourceBtn.GlobalPosition.X - 200f, sourceBtn.GlobalPosition.Y - 20f);
+		_activeTooltip.PivotOffset = new Vector2(100, 0);
+		_activeTooltip.Scale = new Vector2(0.7f, 0.7f);
+		_activeTooltip.Modulate = new Color(1, 1, 1, 0);
+		Tween t = CreateTween().SetParallel(true);
+		t.TweenProperty(_activeTooltip, "scale", Vector2.One, 0.15f).SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(_activeTooltip, "modulate:a", 1f, 0.1f);
+	}
+	 
+	private void HideItemTooltip()
+	{
+		if (_activeTooltip != null && GodotObject.IsInstanceValid(_activeTooltip))
+		{
+			PanelContainer dying = _activeTooltip; _activeTooltip = null;
+			Tween t = CreateTween();
+			t.TweenProperty(dying, "scale", new Vector2(0.8f, 0.8f), 0.1f);
+			t.Parallel().TweenProperty(dying, "modulate:a", 0f, 0.1f);
+			t.Finished += () => dying.QueueFree();
+		}
 	}
 }
 
@@ -3661,6 +4489,7 @@ public partial class GameManager
 
 [FILENAME: GameManager.cs]
 
+// GameManager.cs
 using Godot;
 using Godot.Collections;
 using System.Collections.Generic;
@@ -3717,6 +4546,10 @@ public partial class GameManager : Node3D
 	private Timer _cloudTimer;
 	private CanvasLayer _dialogueBgLayer;
 	private TextureRect _activeDialogueBackground;
+	
+	private List<PanelContainer> _activeBondNotifications = new();
+	private Queue<System.Action> _celebrationQueue = new();
+	private bool _celebrationPlaying = false;
 
 	// === GAME DATA ===
 	public List<CampConversation> CampConversationsPool = new();
@@ -3760,6 +4593,7 @@ public partial class GameManager : Node3D
 		}
 
 		CallDeferred(MethodName.SetupUnifiedUI);
+		GameJuiceUpgrade.Install(this);
 		GameDatabase.Initialize();
 		GenerateGrid();
 		_comboVisualizer = new ComboVisualizer();
@@ -3901,7 +4735,33 @@ public partial class GameManager : Node3D
 		if (_dialogueActive || _levelUpActive || _lootScreenActive || _currentState == State.EnemyTurn || _currentState == State.Cutscene) return;
 
 		if (@event is InputEventMouseMotion mouseMotion) HandleHover(mouseMotion.Position);
-		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+		else if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed)
+		{
+			if (mouseEvent.ButtonIndex == MouseButton.Left) HandleClick(mouseEvent.Position);
+			else if (_currentState == State.PlayerTurn || _currentState == State.SelectingAttackTarget)
+				HandleZoom(mouseEvent);
+		}
+	}
+
+	private void HandleZoom(InputEventMouseButton e)
+	{
+		if (Cam == null) return;
+		float zoomStep = e.ButtonIndex == MouseButton.WheelUp ? -1.5f : 
+						 e.ButtonIndex == MouseButton.WheelDown ? 1.5f : 0f;
+		if (zoomStep == 0f) return;
+
+		if (Cam.Projection == Camera3D.ProjectionType.Orthogonal)
+		{
+			float target = Mathf.Clamp(Cam.Size + zoomStep, 18f, 50f);
+			CreateTween().TweenProperty(Cam, "size", target, 0.15f)
+				.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
+		else
+		{
+			float target = Mathf.Clamp(Cam.Fov + zoomStep * 2f, 30f, 90f);
+			CreateTween().TweenProperty(Cam, "fov", target, 0.15f)
+				.SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+		}
 	}
 
 	// === SCRIPT & STORY LOGIC ===
@@ -4034,59 +4894,18 @@ public partial class GameManager : Node3D
 	{
 		return StoryFlags.TryGetValue(flagName, out bool val) && val;
 	}
-
-	// Called by Dialogic's if statements!
-	public int GetRelationship(string charName, string relType)
-	{
-		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName);
-		if (companion != null && companion.Relationships.ContainsKey(relType))
-			return companion.Relationships[relType];
-		return 0; // Return 0 if they haven't joined or the stat doesn't exist
-	}
-
-	private void UpdateRelationship(string charName, string relType, int amount)
-	{
-		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
-		if (companion != null && companion.Relationships.ContainsKey(relType))
-		{
-			int oldVal = companion.Relationships[relType];
-			int newVal = Mathf.Clamp(oldVal + amount, 0, 100);
-			companion.Relationships[relType] = newVal;
-
-			// === CARD RANK UP: When Respect hits a threshold, advance the card! ===
-			// (Only track "Respect" for card rank for now; you can expand this.)
-			if (relType == "Respect")
-			{
-				// Thresholds: 60, 70, 80, 85, 90, 95, 100 → each triggers a rank-up
-				int[] thresholds = { 60, 70, 80, 85, 90, 95, 100 };
-				bool crossedThreshold = false;
-				foreach (int t in thresholds)
-				{
-					if (oldVal < t && newVal >= t) { crossedThreshold = true; break; }
-				}
-				if (crossedThreshold)
-				{
-					CardRank newRank = companion.AdvanceCardRank();
-					ShowCardRankUpNotification(companion, newRank);
-				}
-			}
-			
-			ShowRelationshipNotification(charName, relType, amount, oldVal, newVal);
-		}
-	}
 	
 	private void OnDialogicSignal(string argument)
 	{
 		if (string.IsNullOrEmpty(argument)) return;
-		
-		// === THE JUICE FIX 3: Catch the ChoicePicked signal! ===
+	 
 		if (argument == "ChoicePicked")
 		{
 			ShowChoicePickedJuice();
 			return;
 		}
-		
-		if (argument.StartsWith("JumpTo:")) 
+	 
+		if (argument.StartsWith("JumpTo:"))
 		{
 			_pendingSection = argument.Split(":")[1];
 		}
@@ -4101,10 +4920,21 @@ public partial class GameManager : Node3D
 		}
 		else if (argument.StartsWith("Rel:"))
 		{
+			// Format: "Rel:CharName:Bond:Amount" e.g. "Rel:Dougal:Bond:30" or "Rel:Dougal:Bond:-10"
 			string[] parts = argument.Split(':');
-			if (parts.Length == 4 && int.TryParse(parts[3], out int amount))
+			if (parts.Length >= 4 && int.TryParse(parts[3], out int amount))
 			{
-				UpdateRelationship(parts[1], parts[2], amount);
+				AddBond(parts[1], amount);
+				// Spawn arrow over the unit on the field if they exist
+				Unit fieldUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.Data?.Profile.Name == parts[1]);
+				if (fieldUnit != null) SpawnBondArrow(fieldUnit, amount > 0);
+			}
+			// Also support short format "Rel:CharName:Amount"
+			else if (parts.Length >= 3 && int.TryParse(parts[2], out int amount2))
+			{
+				AddBond(parts[1], amount2);
+				Unit fieldUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.Data?.Profile.Name == parts[1]);
+				if (fieldUnit != null) SpawnBondArrow(fieldUnit, amount2 > 0);
 			}
 		}
 		else if (argument.StartsWith("Emotion:"))
@@ -4242,31 +5072,177 @@ public partial class GameManager : Node3D
 	{
 		if (string.IsNullOrWhiteSpace(cond)) return true;
 		cond = cond.Trim();
-
-		if (cond.StartsWith("Rel:"))
+	 
+		// New format: "Bond:Dougal >= 60"
+		if (cond.StartsWith("Bond:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string charName = tokens[0].Split(':')[1];
+				int currentVal = GetBondXP(charName);
+				if (int.TryParse(tokens[2], out int target))
+				{
+					return tokens[1] switch
+					{
+						">" => currentVal > target,
+						"<" => currentVal < target,
+						">=" => currentVal >= target,
+						"<=" => currentVal <= target,
+						"==" => currentVal == target,
+						_ => true
+					};
+				}
+			}
+		}
+		// Legacy format: "Rel:Dougal:Respect >= 60" → just checks BondXP
+		else if (cond.StartsWith("Rel:"))
 		{
 			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
 			if (tokens.Length == 3)
 			{
 				string[] idParts = tokens[0].Split(':');
-				if (idParts.Length == 3)
+				string charName = idParts.Length >= 2 ? idParts[1] : "";
+				int currentVal = GetBondXP(charName);
+				if (int.TryParse(tokens[2], out int target))
 				{
-					int currentVal = GetRelationship(idParts[1], idParts[2]);
-					if (int.TryParse(tokens[2], out int target))
+					return tokens[1] switch
 					{
-						if (tokens[1] == ">") return currentVal > target;
-						if (tokens[1] == "<") return currentVal < target;
-						if (tokens[1] == ">=") return currentVal >= target;
-						if (tokens[1] == "<=") return currentVal <= target;
-						if (tokens[1] == "==") return currentVal == target;
-					}
+						">" => currentVal > target,
+						"<" => currentVal < target,
+						">=" => currentVal >= target,
+						"<=" => currentVal <= target,
+						"==" => currentVal == target,
+						_ => true
+					};
 				}
 			}
 		}
 		else if (cond.StartsWith("!Flag:")) return !HasFlag(cond.Substring(6));
 		else if (cond.StartsWith("Flag:")) return HasFlag(cond.Substring(5));
-
-		return true; 
+	 
+		return true;
+	}
+	
+	/// <summary>
+	/// Central bond change method. Handles positive gains, negative losses, 
+	/// rank-ups, rank-downs, notifications, and all animations.
+	/// </summary>
+	public void AddBond(string charName, int amount)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		if (companion == null || amount == 0) return;
+	 
+		int oldXP = companion.BondXP;
+		CardRank oldRank = companion.CardRank;
+		int rankChange = companion.AddBondXP(amount);
+	 
+		ShowBondNotification(charName, amount, oldXP, companion.BondXP, rankChange);
+	 
+		CardRank capturedNewRank = companion.CardRank;
+		CardRank capturedOldRank = oldRank;
+		PersistentUnit capturedUnit = companion;
+	 
+		if (rankChange == 1)
+			QueueCelebration(() => ShowCardRankUpCelebration(capturedUnit, capturedOldRank, capturedNewRank));
+		else if (rankChange == -1)
+			QueueCelebration(() => ShowCardRankDownCelebration(capturedUnit, capturedOldRank, capturedNewRank));
+	}
+	 
+	private void QueueCelebration(System.Action celebAction)
+	{
+		_celebrationQueue.Enqueue(celebAction);
+		if (!_celebrationPlaying)
+			PlayNextCelebration();
+	}
+	 
+	private void PlayNextCelebration()
+	{
+		if (_celebrationQueue.Count == 0) { _celebrationPlaying = false; return; }
+		_celebrationPlaying = true;
+		_celebrationQueue.Dequeue().Invoke();
+	}
+	 
+	/// <summary>
+	/// After an attack resolves, check adjacency and award bond XP.
+	/// </summary>
+	public void ProcessCombatBondGains(Unit attacker, Unit target, int damageDealt)
+	{
+		if (damageDealt <= 0 || !attacker.IsFriendly) return;
+	 
+		Unit playerUnit = _units.FirstOrDefault(u => GodotObject.IsInstanceValid(u) && u.IsFriendly && u.Data.IsPlayerCharacter);
+		if (playerUnit == null) return;
+	 
+		if (attacker.Data.IsPlayerCharacter)
+		{
+			foreach (var ally in _units.Where(u => GodotObject.IsInstanceValid(u) && u.IsFriendly && !u.Data.IsPlayerCharacter && u != attacker))
+			{
+				if (GetGridDistance(attacker.GlobalPosition, ally.GlobalPosition) <= 1)
+				{
+					int bondAmount = Mathf.Max(1, damageDealt / 2);
+					AddBond(ally.Data.Profile.Name, bondAmount);
+					SpawnBondArrow(ally, true);
+				}
+			}
+		}
+		else
+		{
+			bool playerNearEnemy = GodotObject.IsInstanceValid(target) && GetGridDistance(playerUnit.GlobalPosition, target.GlobalPosition) <= 1;
+			bool playerNearAlly = GetGridDistance(playerUnit.GlobalPosition, attacker.GlobalPosition) <= 1;
+	 
+			if (playerNearEnemy || playerNearAlly)
+			{
+				int bondAmount = Mathf.Max(1, damageDealt / 2);
+				AddBond(attacker.Data.Profile.Name, bondAmount);
+				SpawnBondArrow(attacker, true);
+			}
+		}
+	}
+	 
+	/// <summary>Bouncy green/red arrow above a unit that just gained/lost bond XP.</summary>
+	private void SpawnBondArrow(Unit unit, bool positive)
+	{
+		if (!GodotObject.IsInstanceValid(unit)) return;
+	 
+		Label3D arrow = new Label3D
+		{
+			Text = positive ? "▲" : "▼",
+			FontSize = 90,
+			Modulate = positive ? new Color(0.3f, 1f, 0.4f) : new Color(1f, 0.3f, 0.3f),
+			OutlineModulate = Colors.Black,
+			OutlineSize = 10,
+			Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+			NoDepthTest = true,
+			RenderPriority = 55
+		};
+		if (_fantasyFont != null) arrow.Font = _fantasyFont;
+	 
+		AddChild(arrow);
+		arrow.GlobalPosition = unit.GlobalPosition + Vector3.Up * 2.5f;
+	 
+		Tween t = CreateTween();
+		float dir = positive ? 1.5f : -0.5f;
+		t.TweenProperty(arrow, "global_position:y", arrow.GlobalPosition.Y + dir, 0.4f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.Parallel().TweenProperty(arrow, "scale", Vector3.One * 1.3f, 0.15f)
+			.SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+		t.TweenProperty(arrow, "scale", Vector3.One, 0.1f)
+			.SetTrans(Tween.TransitionType.Bounce).SetEase(Tween.EaseType.Out);
+		t.TweenInterval(0.4f);
+		t.TweenProperty(arrow, "modulate:a", 0f, 0.3f);
+		t.Finished += () => arrow.QueueFree();
+	}
+	
+	public int GetBondXP(string charName)
+	{
+		PersistentUnit companion = _party.FirstOrDefault(u => u.Profile.Name == charName && !u.IsPlayerCharacter);
+		return companion?.BondXP ?? 0;
+	}
+	 
+	// Backwards compat for anything still calling the old signature
+	public int GetRelationship(string charName, string relType)
+	{
+		return GetBondXP(charName);
 	}
 }
 
@@ -4437,19 +5413,22 @@ using Godot;
 
 public partial class StoryBridge : Node
 {
-	// Dialogic will call this globally!
 	public bool HasFlag(string flagName)
 	{
 		return GameManager.Instance != null && GameManager.Instance.HasFlag(flagName);
 	}
 
-	// Dialogic will call this globally!
-	public int GetRelationship(string charName, string relType)
+	public int GetBondXP(string charName)
 	{
 		if (GameManager.Instance != null)
-			return GameManager.Instance.GetRelationship(charName, relType);
-		
+			return GameManager.Instance.GetBondXP(charName);
 		return 0;
+	}
+
+	// Backwards compat — old Dialogic conditions may still call this
+	public int GetRelationship(string charName, string relType)
+	{
+		return GetBondXP(charName);
 	}
 }
 
@@ -4459,6 +5438,7 @@ public partial class StoryBridge : Node
 
 [FILENAME: StoryConstants.cs]
 
+// StoryConstants.cs
 using Godot;
 
 public static class StoryConstants
@@ -4470,14 +5450,17 @@ public static class StoryConstants
 	public const string DefaultCampaignPath = "res://story/campaign.json";
 	public const string TimelinePathPrefix = "res://dialogic_timelines/";
 	public const string TimelineExtension = ".dtl";
-
-	// 30x30 grid: allies left, enemies right
+ 
+	// === MOVED CLOSER TO CENTER ===
+	// 30x30 grid, TileSize=2. World center ≈ (29, 0, 29).
+	// Allies at tiles 8-10 (X=16-20), enemies at tiles 18-20 (X=36-40).
+	// ~8-10 tiles apart → combat starts in 2-3 rounds.
 	public static readonly Vector3[] DefaultFriendlySpawns = {
-		new(4, 0, 24), new(4, 0, 28), new(4, 0, 32),
-		new(8, 0, 22), new(8, 0, 26), new(8, 0, 30), new(8, 0, 34),
+		new(16, 0, 24), new(16, 0, 28), new(16, 0, 32),
+		new(20, 0, 22), new(20, 0, 26), new(20, 0, 30), new(20, 0, 34),
 	};
-
-	public const float EnemyStartX = 48f;
+ 
+	public const float EnemyStartX = 36f;
 	public const float EnemySpacingX = 4f;
 	public const float EnemySpacingZ = 4f;
 	public const float EnemyStartZ = 22f;
@@ -4489,6 +5472,8 @@ public static class StoryConstants
 
 
 [FILENAME: StoryLoader.cs]
+
+// StoryLoader.cs
 
 using Godot;
 using System;
@@ -4546,6 +5531,8 @@ public static class StoryToScriptMapper
 
 
 [FILENAME: StoryModels.cs]
+
+// StoryModel.cs
 
 using System.Collections.Generic;
 
@@ -4892,3 +5879,5 @@ public partial class Unit : Node3D
 
 
 ==========================================================================================
+
+

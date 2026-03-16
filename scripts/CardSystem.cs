@@ -41,6 +41,15 @@ public static class CardRankExtensions
 		if (idx < 0) return CardRank.Two;
 		return idx + 1 < order.Length ? (CardRank)(tier * 100 + order[idx + 1]) : (CardRank)((tier + 1) * 100 + 2);
 	}
+	public static CardRank PrevRank(this CardRank current)
+	{
+		if (current == CardRank.None || current == CardRank.Two) return CardRank.None;
+		int[] order = { 2, 3, 4, 5, 11, 12, 13, 14 };
+		int tier = current.Tier(); int face = current.FaceValue();
+		int idx = Array.IndexOf(order, face);
+		if (idx < 0) return CardRank.None;
+		return idx - 1 >= 0 ? (CardRank)(tier * 100 + order[idx - 1]) : tier > 0 ? (CardRank)((tier - 1) * 100 + 14) : CardRank.None;
+	}
 }
 
 // ============================================================
@@ -155,24 +164,110 @@ public static class PokerHandEvaluator
 public static class FlankingDetector
 {
 	const float TileSize = 2f;
-	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(Unit attacker, Unit target, List<Unit> all)
+
+	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(
+		Unit attacker, Unit target, List<Unit> all,
+		out Dictionary<Unit, Unit> chainParent)
 	{
 		var result = new List<(Unit, Unit)>();
-		var allies = all.Where(u => u.IsFriendly && u != attacker && GodotObject.IsInstanceValid(u)).ToList();
-		var enemies = all.Where(u => !u.IsFriendly && GodotObject.IsInstanceValid(u)).ToList();
-		var chained = new HashSet<Unit> { attacker }; var frontier = new Queue<Unit>();
-		foreach (var a in allies) if (IsFlank(attacker, a, target)) { result.Add((a, target)); if (chained.Add(a)) frontier.Enqueue(a); }
-		while (frontier.Count > 0) { var cur = frontier.Dequeue(); foreach (var e in enemies) foreach (var a in allies)
-			if (!chained.Contains(a) && IsFlank(cur, a, e)) { result.Add((a, e)); chained.Add(a); frontier.Enqueue(a); } }
+		chainParent = new Dictionary<Unit, Unit>();
+
+		var allies = all.Where(u => u.IsFriendly == attacker.IsFriendly && u != attacker && GodotObject.IsInstanceValid(u)).ToList();
+		var enemies = all.Where(u => u.IsFriendly != attacker.IsFriendly && GodotObject.IsInstanceValid(u)).ToList();
+
+		var chained = new HashSet<Unit> { attacker };
+		var frontier = new Queue<Unit>();
+
+		// Step 1: Find allies that flank the PRIMARY target in a straight line with attacker
+		foreach (var a in allies)
+		{
+			if (IsCollinearFlank(attacker, a, target))
+			{
+				result.Add((a, target));
+				chainParent[a] = attacker;
+				if (chained.Add(a)) frontier.Enqueue(a);
+			}
+		}
+
+		// Step 2: Chain — each chained unit can recruit MORE allies flanking ANY enemy
+		while (frontier.Count > 0)
+		{
+			var cur = frontier.Dequeue();
+			foreach (var e in enemies)
+			{
+				foreach (var a in allies)
+				{
+					if (!chained.Contains(a) && IsCollinearFlank(cur, a, e))
+					{
+						result.Add((a, e));
+						chainParent[a] = cur;
+						chained.Add(a);
+						frontier.Enqueue(a);
+					}
+				}
+			}
+		}
+
 		return result;
 	}
-	static bool IsFlank(Unit a, Unit b, Unit e)
+
+	// Backwards-compat overload
+	public static List<(Unit ally, Unit flankedEnemy)> GetFlankingPairs(Unit attacker, Unit target, List<Unit> all)
 	{
-		float dot = (e.GlobalPosition - a.GlobalPosition).Normalized().Dot((e.GlobalPosition - b.GlobalPosition).Normalized());
-		return dot <= -0.3f && Dist(a.GlobalPosition, e.GlobalPosition) <= a.Data.AttackRange && Dist(b.GlobalPosition, e.GlobalPosition) <= b.Data.AttackRange;
+		return GetFlankingPairs(attacker, target, all, out _);
 	}
+
+	/// <summary>
+	/// TRUE flanking: attacker, enemy, and flanker must be COLLINEAR on the grid.
+	/// The enemy must be BETWEEN attacker and flanker on a straight line.
+	/// Straight line = same direction vector (one of 8 grid directions).
+	/// Both attacker and flanker must be within attack range of the enemy.
+	/// </summary>
+	static bool IsCollinearFlank(Unit a, Unit b, Unit e)
+	{
+		// Grid positions
+		Vector2I posA = GridPos(a.GlobalPosition);
+		Vector2I posB = GridPos(b.GlobalPosition);
+		Vector2I posE = GridPos(e.GlobalPosition);
+
+		// Direction from attacker to enemy (normalized to -1/0/+1 per axis)
+		Vector2I dirAE = new Vector2I(
+			Mathf.Sign(posE.X - posA.X),
+			Mathf.Sign(posE.Y - posA.Y));
+
+		// Direction from enemy to flanker
+		Vector2I dirEB = new Vector2I(
+			Mathf.Sign(posB.X - posE.X),
+			Mathf.Sign(posB.Y - posE.Y));
+
+		// Must be a valid direction (not zero — attacker can't be on enemy's tile)
+		if (dirAE.X == 0 && dirAE.Y == 0) return false;
+		if (dirEB.X == 0 && dirEB.Y == 0) return false;
+
+		// COLLINEAR CHECK: direction from A→E must equal direction from E→B
+		// This means A, E, B are on a straight line and E is between A and B
+		if (dirAE != dirEB) return false;
+
+		// Range check: both must be able to reach the enemy
+		if (Dist(a.GlobalPosition, e.GlobalPosition) > a.Data.AttackRange) return false;
+		if (Dist(b.GlobalPosition, e.GlobalPosition) > b.Data.AttackRange) return false;
+
+		return true;
+	}
+
+	static Vector2I GridPos(Vector3 pos)
+	{
+		return new Vector2I(
+			Mathf.RoundToInt(pos.X / TileSize),
+			Mathf.RoundToInt(pos.Z / TileSize));
+	}
+
 	public static int Dist(Vector3 a, Vector3 b)
-	{ int ax=Mathf.RoundToInt(a.X/TileSize),az=Mathf.RoundToInt(a.Z/TileSize),bx=Mathf.RoundToInt(b.X/TileSize),bz=Mathf.RoundToInt(b.Z/TileSize);return Mathf.Max(Mathf.Abs(ax-bx),Mathf.Abs(az-bz)); }
+	{
+		int ax = Mathf.RoundToInt(a.X / TileSize), az = Mathf.RoundToInt(a.Z / TileSize);
+		int bx = Mathf.RoundToInt(b.X / TileSize), bz = Mathf.RoundToInt(b.Z / TileSize);
+		return Mathf.Max(Mathf.Abs(ax - bx), Mathf.Abs(az - bz));
+	}
 }
 
 // ============================================================
@@ -184,7 +279,8 @@ public class ComboResult
 	public HandResult HandResult;
 	public Dictionary<Unit, List<(Unit attacker, float multiplier)>> AttackMap = new();
 	public bool HasCombo => HandResult != null && HandResult.Hand > PokerHand.HighCard;
-	public List<Unit> AllFlankingAllies = new(); // For visuals
+	public List<Unit> AllFlankingAllies = new();
+	public Dictionary<Unit, Unit> ChainParentMap = new();
 }
 
 public static class ComboResolver
@@ -195,47 +291,50 @@ public static class ComboResolver
 		foreach (var item in inventory) if (item is Equipment eq) jokers |= eq.JokerEffects;
 		if (attacker.Data.EquippedWeapon != null) jokers |= attacker.Data.EquippedWeapon.JokerEffects;
 		if (attacker.Data.EquippedArmor != null) jokers |= attacker.Data.EquippedArmor.JokerEffects;
-
-		var flankingPairs = FlankingDetector.GetFlankingPairs(attacker, primaryTarget, allUnits);
-
-		// === KEY CHANGE: Only FLANKING ALLIES contribute cards. Attacker does NOT. ===
+ 
+		var flankingPairs = FlankingDetector.GetFlankingPairs(attacker, primaryTarget, allUnits, out var chainParent);
+ 
 		var cardPool = new List<CardEntry>();
 		var unitsInCombo = new HashSet<Unit>();
 		var allFlankAllies = new List<Unit>();
-
-		foreach (var (ally, _) in flankingPairs)
+		var directFlankers = new HashSet<Unit>();
+ 
+		// Non-player attacker contributes their own card
+		if (!attacker.Data.IsPlayerCharacter && attacker.Data.CardRank != CardRank.None)
+			cardPool.Add(new CardEntry { Owner = attacker, Rank = attacker.Data.CardRank, Suit = attacker.Data.CardSuit });
+ 
+		foreach (var (ally, flankedEnemy) in flankingPairs)
 		{
 			if (unitsInCombo.Contains(ally)) continue;
 			if (cardPool.Count >= 5) break;
 			unitsInCombo.Add(ally);
 			allFlankAllies.Add(ally);
+			if (chainParent.TryGetValue(ally, out Unit parent) && parent == attacker)
+				directFlankers.Add(ally);
 			if (ally.Data.CardRank != CardRank.None)
 				cardPool.Add(new CardEntry { Owner = ally, Rank = ally.Data.CardRank, Suit = ally.Data.CardSuit });
 		}
-
-		HandResult handResult = cardPool.Count > 0
-			? PokerHandEvaluator.Evaluate(cardPool, jokers)
-			: HandResult.None();
-
-		// Ensure contributing units are populated
+ 
+		HandResult handResult = cardPool.Count > 0 ? PokerHandEvaluator.Evaluate(cardPool, jokers) : HandResult.None();
 		if (handResult.ContributingUnits.Count == 0 && cardPool.Count > 0)
 		{
 			handResult.ContributingCards = cardPool;
 			handResult.ContributingUnits = cardPool.Select(c => c.Owner).Distinct().ToList();
 		}
-
-		var result = new ComboResult { HandResult = handResult, AllFlankingAllies = allFlankAllies };
+ 
+		var result = new ComboResult { HandResult = handResult, AllFlankingAllies = allFlankAllies, ChainParentMap = chainParent };
 		result.AttackMap[primaryTarget] = new List<(Unit, float)> { (attacker, handResult.DamageMultiplier) };
-
+ 
 		foreach (var (ally, flankedEnemy) in flankingPairs)
 		{
+			if (!directFlankers.Contains(ally)) continue;
 			if (!handResult.ContributingUnits.Contains(ally)) continue;
 			if (!result.AttackMap.ContainsKey(flankedEnemy))
 				result.AttackMap[flankedEnemy] = new List<(Unit, float)>();
 			if (!result.AttackMap[flankedEnemy].Any(x => x.Item1 == ally))
 				result.AttackMap[flankedEnemy].Add((ally, handResult.DamageMultiplier));
 		}
-
+ 
 		return result;
 	}
 }

@@ -24,11 +24,11 @@
 			{ "Speaker": "Guard", "Text": "Maker's breath... please! I yield! The Magister didn't pay us enough to die to a pair of alley rats!", "Emotion": "fear" },
 			{ "Choices": [
 				{ "Text": "We don't leave loose ends. Finish him, Dougal.", "SetFlag": "KilledDockGuard", "Steps": [
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:20" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Bond:20" },
 					{ "Speaker": "Dougal", "Text": "Pragmatic. I like it. No witnesses to warn the estate.", "Emotion": "bravery" },
 					{ "Action": "Leave", "Character": "Guard" } ] },
 				{ "Text": "Run along, friend. And reconsider your choice of employer.", "SetFlag": "SparedDockGuard", "Steps": [
-					{ "Action": "Signal", "Value": "Rel:Dougal:Agreement:-20" },
+					{ "Action": "Signal", "Value": "Rel:Dougal:Bond:-20" },
 					{ "Speaker": "Guard", "Text": "Thank you! Thank you! You'll never see me again!", "Emotion": "bravery" },
 					{ "Action": "Leave", "Character": "Guard" },
 					{ "Speaker": "Dougal", "Text": "You're a fool, Ambrose. A suave fool, but a fool. That rat's going to squeal.", "Emotion": "anger" } ] } ] },

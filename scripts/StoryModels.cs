@@ -1,3 +1,5 @@
+// StoryModel.cs
+
 using System.Collections.Generic;
 
 // --- Story JSON DTOs: match schema in story/campaign.json and story/mission_*.json ---

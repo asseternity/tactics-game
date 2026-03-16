@@ -30,7 +30,6 @@ public partial class DialogicPipeline : Node
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_timelines/"));
 		Directory.CreateDirectory(ProjectSettings.GlobalizePath("res://dialogic_characters/"));
 
-		// === THE FIX: Process each mission one by one so "Start" sections don't overwrite each other! ===
 		foreach (string missionPath in campaign.Missions)
 		{
 			StoryData missionData = StoryLoader.GetStoryData(ProjectSettings.GlobalizePath(missionPath));
@@ -47,7 +46,6 @@ public partial class DialogicPipeline : Node
 			{
 				if (campConv.Steps != null && campConv.Steps.Count > 0)
 				{
-					// We pass null for StoryData here because camp convos don't have mission-level default facings
 					WriteTimelineFile(campConv.TimelineName, campConv.Steps, uniqueCampCharacters, new StoryData());
 				}
 			}
@@ -229,7 +227,7 @@ custom_info = {{}}
 					bool canSeamlessJump = false;
 					string targetTimeline = "";
 					
-					if (data.Sections.TryGetValue(targetSection, out StorySection section) && section.Events.Count > 0)
+					if (data.Sections != null && data.Sections.TryGetValue(targetSection, out StorySection section) && section.Events.Count > 0)
 					{
 						if (section.Events[0].Type == "Dialogue") 
 						{
@@ -317,8 +315,6 @@ custom_info = {{}}
 				foreach (var choice in step.Choices)
 				{
 					dtl.AppendLine($"{indent}- {choice.Text}");
-					
-					// === THE JUICE FIX 1: Inject the choice picked signal immediately! ===
 					dtl.AppendLine($"{indent}\t[signal arg=\"ChoicePicked\"]");
 					
 					if (!string.IsNullOrEmpty(choice.SetFlag))
@@ -349,15 +345,25 @@ custom_info = {{}}
 		if (string.IsNullOrWhiteSpace(cond)) return "true";
 		cond = cond.Trim();
 
-		// THE FIX: Changed 'GameManager' to 'StoryBridge' in all three checks!
-		if (cond.StartsWith("Rel:"))
+		// Bond condition: "Bond:Dougal >= 60"
+		if (cond.StartsWith("Bond:"))
+		{
+			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+			if (tokens.Length == 3)
+			{
+				string charName = tokens[0].Split(':')[1];
+				return $"StoryBridge.GetBondXP(\"{charName}\") {tokens[1]} {tokens[2]}";
+			}
+		}
+		// Legacy Rel: condition — now just checks BondXP
+		else if (cond.StartsWith("Rel:"))
 		{
 			string[] tokens = cond.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
 			if (tokens.Length == 3)
 			{
 				string[] idParts = tokens[0].Split(':');
-				if (idParts.Length == 3)
-					return $"StoryBridge.GetRelationship(\"{idParts[1]}\", \"{idParts[2]}\") {tokens[1]} {tokens[2]}";
+				string charName = idParts.Length >= 2 ? idParts[1] : idParts[0];
+				return $"StoryBridge.GetBondXP(\"{charName}\") {tokens[1]} {tokens[2]}";
 			}
 		}
 		else if (cond.StartsWith("!Flag:"))
@@ -369,6 +375,6 @@ custom_info = {{}}
 			return $"StoryBridge.HasFlag(\"{cond.Substring(5)}\") == true";
 		}
 
-		return cond; 
+		return cond;
 	}
 }

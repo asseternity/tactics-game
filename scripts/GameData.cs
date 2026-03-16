@@ -1,3 +1,4 @@
+// GameData.cs
 using Godot;
 using System.Collections.Generic;
 
@@ -40,29 +41,32 @@ public class PersistentUnit
 	public int Level = 1;
 	public int CurrentXP = 0;
 	public int MaxXP = 100;
-
+ 
 	public int MaxHP;
 	public int CurrentHP;
 	public int AttackDamage;
 	public int AttackRange;
 	public int Movement;
 	public int XPReward;
-
+ 
 	// === CARD SYSTEM ===
 	public CardRank CardRank = CardRank.None;
 	public CardSuit CardSuit => Profile.CardSuit;
 	public int Speed => Profile.Speed;
-
+ 
 	public bool IsPlayerCharacter = false;
-	public Dictionary<string, int> Relationships = new();
-
+ 
+	// === BOND SYSTEM (replaces old Relationships dict) ===
+	public int BondXP = 0;
+	public const int BondXPMax = 100;
+ 
 	public Equipment EquippedWeapon;
 	public Equipment EquippedArmor;
-
+ 
 	public int GetTotalMaxHP()     => MaxHP     + (EquippedWeapon?.BonusMaxHP   ?? 0) + (EquippedArmor?.BonusMaxHP   ?? 0);
 	public int GetTotalDamage()    => AttackDamage + (EquippedWeapon?.BonusDamage  ?? 0) + (EquippedArmor?.BonusDamage  ?? 0);
 	public int GetTotalMovement()  => Movement  + (EquippedWeapon?.BonusMovement ?? 0) + (EquippedArmor?.BonusMovement ?? 0);
-
+ 
 	public PersistentUnit(UnitProfile profile, bool isPlayer = false)
 	{
 		Profile = profile;
@@ -73,37 +77,45 @@ public class PersistentUnit
 		Movement = profile.Movement;
 		XPReward = profile.XPReward;
 		IsPlayerCharacter = isPlayer;
-
-		// === FIX: All units start with a base card rank (Two) ===
-		// Without this, CardRank stays None and no cards ever enter the pool,
-		// making the entire poker/combo system invisible to the player.
-		// Player characters always have at least Two.
-		// Companions also start at Two; relationship rank-ups advance them further.
-		CardRank = CardRank.Two;
-
-		if (!IsPlayerCharacter)
-		{
-			Relationships.Add("Respect", 50);
-			Relationships.Add("Agreement", 50);
-			Relationships.Add("Fear", 10);
-		}
+		CardRank = CardRank.None;
+		BondXP = 0;
 	}
-
+ 
 	public void HealBetweenBattles()
 	{
 		CurrentHP += Mathf.RoundToInt(GetTotalMaxHP() * 0.3f);
 		if (CurrentHP <= 0) CurrentHP = 1;
 		if (CurrentHP > GetTotalMaxHP()) CurrentHP = GetTotalMaxHP();
 	}
-
-	// === RELATIONSHIP → CARD RANK ===
+ 
 	/// <summary>
-	/// When a relationship action rewards a card rank-up, call this.
+	/// Add bond XP (positive or negative). Returns: 1 = rank up, -1 = rank down, 0 = no change.
 	/// </summary>
-	public CardRank AdvanceCardRank()
+	public int AddBondXP(int amount)
 	{
-		CardRank = CardRank.NextRank();
-		return CardRank;
+		if (IsPlayerCharacter) return 0;
+		BondXP += amount;
+ 
+		if (BondXP >= BondXPMax)
+		{
+			BondXP -= BondXPMax;
+			CardRank = CardRank == CardRank.None ? CardRank.Two : CardRank.NextRank();
+			return 1; // Ranked up
+		}
+		else if (BondXP < 0)
+		{
+			if (CardRank == CardRank.None)
+			{
+				BondXP = 0; // Can't go below None
+				return 0;
+			}
+			// Downgrade!
+			CardRank = CardRank.PrevRank();
+			BondXP = BondXPMax + BondXP; // e.g. -10 becomes 90
+			if (BondXP < 0) BondXP = 0;
+			return -1; // Ranked down
+		}
+		return 0;
 	}
 }
 
